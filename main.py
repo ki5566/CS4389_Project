@@ -42,16 +42,52 @@ class ApiClient:
             data = response.json()
             return data.get("result")
         return None
+    
+    def get_transactions_by_block(self, block_number: int):
+        block = self.get_block_by_number(block_number)
+        if block:
+            raw_transactions = block["transactions"]
+            transactions = [{
+                "blockNumber": transaction["blockNumber"],
+                "hash": transaction["hash"],
+                "from": transaction["from"],
+                "to": transaction["to"],
+                "value": transaction["value"],
+                "index": i
+            } for i, transaction in enumerate(raw_transactions) if int(transaction["value"], 16) > 0]
+            return transactions
+        return []
 
 async def query_latest_block(ApiClient : ApiClient):
     block_number = ApiClient.get_latest_block_number()
     return ApiClient.get_block_by_number(block_number)
-    
+
+async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
+    block_number_hex = ApiClient.get_latest_block_number()
+    if os.path.exists("./data/transactions.json"):
+        with open("./data/transactions.json", "r") as json_file:
+            data = json.load(json_file)
+    else:
+        data = {}
+    transactions = data["transactions"] if "transactions" in data else []
+    blocks = data["blocks"] if "blocks" in data else []
+    skipcount = 0
+    for i in range(n):
+        block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
+        while(block_num_hex in blocks):
+            print(f"Block {block_num_hex} already fetched, skipping...")
+            skipcount += 1
+            block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
+        block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
+        print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
+        transactions.extend(block_transactions)
+        blocks.append(block_num_hex)
+    return { "transactions": transactions, "blocks": blocks }
+
 def main():
     client = ApiClient()
-    loop = asyncio.get_event_loop()
-    block = loop.run_until_complete(query_latest_block(client))
-    print(json.dumps(block, indent=4))
-    
+    data = asyncio.run(query_latest_n_blocks(client, 2))
+    open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
+
 if __name__ == "__main__":
     main()
