@@ -3,6 +3,7 @@ import json
 from dotenv import load_dotenv
 import os
 import asyncio
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -43,11 +44,12 @@ class ApiClient:
             return data.get("result")
         return None
     
-    def get_transactions_by_block(self, block_number: int):
+    def get_transactions_by_block(self, block_number: str):
         block = self.get_block_by_number(block_number)
         if block:
             raw_transactions = block["transactions"]
             transactions = [{
+                "timestamp": block["timestamp"],
                 "blockNumber": transaction["blockNumber"],
                 "hash": transaction["hash"],
                 "from": transaction["from"],
@@ -64,6 +66,8 @@ async def query_latest_block(ApiClient : ApiClient):
 
 async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
     block_number_hex = ApiClient.get_latest_block_number()
+    if not block_number_hex:
+        return None
     if os.path.exists("./data/transactions.json"):
         with open("./data/transactions.json", "r") as json_file:
             data = json.load(json_file)
@@ -78,6 +82,8 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
             print(f"Block {block_num_hex} already fetched, skipping...")
             skipcount += 1
             block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
+        if i > 0:  
+            time.sleep(5)
         block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
         print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
         transactions.extend(block_transactions)
@@ -86,8 +92,9 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
 
 def main():
     client = ApiClient()
-    data = asyncio.run(query_latest_n_blocks(client, 2))
+    data = asyncio.run(query_latest_n_blocks(client, 500))
     open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
+    print(client.get_latest_block_number())
 
 if __name__ == "__main__":
     main()
