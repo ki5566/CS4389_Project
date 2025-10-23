@@ -86,7 +86,10 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
             time.sleep(5)
         block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
         print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
-        transactions.extend(block_transactions)
+        open("./data/transactions.json", "w").write(json.dumps({
+            "transactions": block_transactions,
+            "blocks": blocks }, indent=4))
+        # transactions.extend(block_transactions)
         blocks.append(block_num_hex)
     return { "transactions": transactions, "blocks": blocks }
 
