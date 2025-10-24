@@ -10,7 +10,7 @@ import sqlite3
 load_dotenv()
 
 # Wait between queries in seconds
-QUERY_DELAY = 3
+QUERY_DELAY = .25
 
 class ApiClient:
     def __init__(self):
@@ -127,8 +127,8 @@ def mark_block_processed(conn: sqlite3.Connection, block_hex: int):
     cur.execute("INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
     conn.commit()
 
-async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
-    block_number_hex = ApiClient.get_latest_block_number()
+async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None):
+    block_number_hex = hex(start_block) if start_block else ApiClient.get_latest_block_number()
     if not block_number_hex:
         return None
 
@@ -150,12 +150,15 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
             time.sleep(QUERY_DELAY)
 
         block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
-        print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
+        # print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
+        if i * 100 // n != (i - 1) * 100 // n:
+            print(f"Progress: {i/n * 100:.2f}%")
 
         # Prepare rows and insert into sqlite
         rows = []
         for tx in block_transactions:
             if not tx:
+                skipped_count += 1
                 continue
             try:
                 timestamp_int = int(tx.get("timestamp", "0"), 16) if isinstance(tx.get("timestamp"), str) else int(tx.get("timestamp", 0))
@@ -192,9 +195,8 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
 
 def main():
     client = ApiClient()
-    data = asyncio.run(query_latest_n_blocks(client, 500))
+    data = asyncio.run(query_n_blocks(client, 1000, 9472018))
     open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
-    print(client.get_latest_block_number())
 
 if __name__ == "__main__":
     main()
