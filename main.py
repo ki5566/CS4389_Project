@@ -4,9 +4,13 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import time
+import sqlite3
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Wait between queries in seconds
+QUERY_DELAY = 3
 
 class ApiClient:
     def __init__(self):
@@ -64,34 +68,127 @@ async def query_latest_block(ApiClient : ApiClient):
     block_number = ApiClient.get_latest_block_number()
     return ApiClient.get_block_by_number(block_number)
 
+def ensure_db_schema(conn: sqlite3.Connection):
+    """Create required tables if they don't exist.
+
+    - wallets(hash INTEGER PRIMARY KEY, balance INTEGER)
+    - transactions(hash INTEGER PRIMARY KEY, timestamp INTEGER, blocknumber INTEGER, from_hash INTEGER, to_hash INTEGER, value INTEGER)
+    - blocks(block_number TEXT PRIMARY KEY) -- to track processed blocks
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS wallets (
+            hash STRING PRIMARY KEY,
+            balance INTEGER DEFAULT 0
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS blocks (
+            block_number INTEGER PRIMARY KEY
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS transactions (
+            hash STRING PRIMARY KEY,
+            timestamp INTEGER,
+            blocknumber INTEGER REFERENCES blocks(block_number), 
+            from_hash STRING REFERENCES wallets(hash),
+            to_hash STRING REFERENCES wallets(hash),
+            value STRING,
+            block_index INTEGER
+        )"""
+    )
+    conn.commit()
+
+def insert_wallet_if_missing(conn: sqlite3.Connection, addr_str: str):
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO wallets (hash, balance) VALUES (?, 0)", (addr_str,))
+
+def insert_transactions_batch(conn: sqlite3.Connection, rows: list):
+    """Insert a batch of transactions. Each row is a tuple matching the transactions table.
+    (hash, timestamp, blocknumber, from_hash, to_hash, value, block_index)
+    """
+    if not rows:
+        return
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT OR IGNORE INTO transactions (hash, timestamp, blocknumber, from_hash, to_hash, value, block_index) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+
+def block_already_processed(conn: sqlite3.Connection, block_hex: int) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM blocks WHERE block_number = ?", (block_hex,))
+    return cur.fetchone() is not None
+
+def mark_block_processed(conn: sqlite3.Connection, block_hex: int):
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
+    conn.commit()
+
 async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
     block_number_hex = ApiClient.get_latest_block_number()
     if not block_number_hex:
         return None
-    if os.path.exists("./data/transactions.json"):
-        with open("./data/transactions.json", "r") as json_file:
-            data = json.load(json_file)
-    else:
-        data = {}
-    transactions = data["transactions"] if "transactions" in data else []
-    blocks = data["blocks"] if "blocks" in data else []
+
+    db_path = os.path.join("./blockchain.db")
+    conn = sqlite3.connect(db_path)
+    ensure_db_schema(conn)
+
+    processed_count = 0
+    skipped_count = 0
     skipcount = 0
     for i in range(n):
         block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
-        while(block_num_hex in blocks):
+        # If this block already processed in DB, skip it
+        while block_already_processed(conn, int(block_num_hex, 16)):
             print(f"Block {block_num_hex} already fetched, skipping...")
             skipcount += 1
             block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
         if i > 0:  
-            time.sleep(5)
+            time.sleep(QUERY_DELAY)
+
         block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
         print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
-        open("./data/transactions.json", "w").write(json.dumps({
-            "transactions": block_transactions,
-            "blocks": blocks }, indent=4))
-        # transactions.extend(block_transactions)
-        blocks.append(block_num_hex)
-    return { "transactions": transactions, "blocks": blocks }
+
+        # Prepare rows and insert into sqlite
+        rows = []
+        for tx in block_transactions:
+            if not tx:
+                continue
+            try:
+                timestamp_int = int(tx.get("timestamp", "0"), 16) if isinstance(tx.get("timestamp"), str) else int(tx.get("timestamp", 0))
+            except Exception:
+                timestamp_int = 0
+            try:
+                blocknumber_int = int(tx.get("blockNumber", "0"), 16) if isinstance(tx.get("blockNumber"), str) else int(tx.get("blockNumber", 0))
+            except Exception:
+                blocknumber_int = 0
+            # try:
+            #     value_int = int(tx.get("value", "0"), 16) if isinstance(tx.get("value"), str) else int(tx.get("value", 0))
+            # except Exception:
+            #     value_int = 0
+            tx_hash = tx.get("hash")
+            from_val = tx.get("from")
+            to_val = tx.get("to")
+            block_index = tx.get("index")
+            value = tx.get("value")
+            
+            if from_val is not None:
+                insert_wallet_if_missing(conn, from_val)
+            if to_val is not None:
+                insert_wallet_if_missing(conn, to_val)
+
+            rows.append((tx_hash, timestamp_int, blocknumber_int, from_val, to_val, value, block_index))
+
+        # Insert batch and mark block processed
+        insert_transactions_batch(conn, rows)
+        mark_block_processed(conn, int(block_num_hex, 16))
+        processed_count += 1
+
+    conn.close()
+    return { "processed_blocks": processed_count, "skipped_blocks": skipped_count }
 
 def main():
     client = ApiClient()
