@@ -12,13 +12,14 @@ load_dotenv()
 # Wait between queries in seconds
 QUERY_DELAY = 3
 
+
 class ApiClient:
     def __init__(self):
         self.base_url = "https://api.etherscan.io/v2/api"
         self.api_key = os.getenv('API_KEY')
         if not self.api_key:
             raise ValueError("API_KEY not found in environment variables")
-        
+
         self.chainid = 11155111
 
     def get_latest_block_number(self):
@@ -47,7 +48,7 @@ class ApiClient:
             data = response.json()
             return data.get("result")
         return None
-    
+
     def get_transactions_by_block(self, block_number: str):
         block = self.get_block_by_number(block_number)
         if block:
@@ -64,34 +65,67 @@ class ApiClient:
             return transactions
         return []
 
-async def query_latest_block(ApiClient : ApiClient):
+    def get_native_balance(self, address: str, block_number: str = "latest"):
+        response = requests.get(self.base_url, params={
+            "chainid": self.chainid,
+            "module": "account",
+            "action": "balance",
+            "address": address,
+            "tag": block_number,
+            "apikey": self.api_key
+        })
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("result")
+        return None
+
+    def get_native_balances_batch(self, addresses: list[str], block_number: str = "latest"):
+        address_str = ",".join(addresses)
+        response = requests.get(self.base_url, params={
+            "chainid": self.chainid,
+            "module": "account",
+            "action": "balancemulti",
+            "address": address_str,
+            "tag": block_number,
+            "apikey": self.api_key
+        })
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("result")
+        return None
+
+
+async def query_latest_block(ApiClient: ApiClient):
     block_number = ApiClient.get_latest_block_number()
     return ApiClient.get_block_by_number(block_number)
+
 
 def ensure_db_schema(conn: sqlite3.Connection):
     """Create required tables if they don't exist.
 
     - wallets(hash INTEGER PRIMARY KEY, balance INTEGER)
-    - transactions(hash INTEGER PRIMARY KEY, timestamp INTEGER, blocknumber INTEGER, from_hash INTEGER, to_hash INTEGER, value INTEGER)
+    - transactions(hash INTEGER PRIMARY KEY, timestamp INTEGER, blocknumber INTEGER,
+                   from_hash INTEGER, to_hash INTEGER, value INTEGER)
     - blocks(block_number TEXT PRIMARY KEY) -- to track processed blocks
     """
     cur = conn.cursor()
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS wallets (
-            hash STRING PRIMARY KEY,
-            balance INTEGER DEFAULT 0
-        )"""
-    )
     cur.execute(
         """CREATE TABLE IF NOT EXISTS blocks (
             block_number INTEGER PRIMARY KEY
         )"""
     )
     cur.execute(
+        """CREATE TABLE IF NOT EXISTS wallets (
+            hash STRING PRIMARY KEY,
+            balance INTEGER DEFAULT 0,
+            last_updated_block_number INTEGER REFERENCES blocks(block_number) DEFAULT 0
+        )"""
+    )
+    cur.execute(
         """CREATE TABLE IF NOT EXISTS transactions (
             hash STRING PRIMARY KEY,
             timestamp INTEGER,
-            blocknumber INTEGER REFERENCES blocks(block_number), 
+            blocknumber INTEGER REFERENCES blocks(block_number),
             from_hash STRING REFERENCES wallets(hash),
             to_hash STRING REFERENCES wallets(hash),
             value STRING,
@@ -100,9 +134,12 @@ def ensure_db_schema(conn: sqlite3.Connection):
     )
     conn.commit()
 
+
 def insert_wallet_if_missing(conn: sqlite3.Connection, addr_str: str):
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO wallets (hash, balance) VALUES (?, 0)", (addr_str,))
+    cur.execute(
+        "INSERT OR IGNORE INTO wallets (hash, balance) VALUES (?, 0)", (addr_str,))
+
 
 def insert_transactions_batch(conn: sqlite3.Connection, rows: list):
     """Insert a batch of transactions. Each row is a tuple matching the transactions table.
@@ -117,17 +154,21 @@ def insert_transactions_batch(conn: sqlite3.Connection, rows: list):
     )
     conn.commit()
 
+
 def block_already_processed(conn: sqlite3.Connection, block_hex: int) -> bool:
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM blocks WHERE block_number = ?", (block_hex,))
     return cur.fetchone() is not None
 
+
 def mark_block_processed(conn: sqlite3.Connection, block_hex: int):
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
+    cur.execute(
+        "INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
     conn.commit()
 
-async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
+
+async def query_latest_n_blocks(ApiClient: ApiClient, n: int):
     block_number_hex = ApiClient.get_latest_block_number()
     if not block_number_hex:
         return None
@@ -146,11 +187,12 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
             print(f"Block {block_num_hex} already fetched, skipping...")
             skipcount += 1
             block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
-        if i > 0:  
+        if i > 0:
             time.sleep(QUERY_DELAY)
 
         block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
-        print(f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
+        print(
+            f"Fetched {len(block_transactions)} transactions from block {block_num_hex}")
 
         # Prepare rows and insert into sqlite
         rows = []
@@ -158,11 +200,13 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
             if not tx:
                 continue
             try:
-                timestamp_int = int(tx.get("timestamp", "0"), 16) if isinstance(tx.get("timestamp"), str) else int(tx.get("timestamp", 0))
+                timestamp_int = int(tx.get("timestamp", "0"), 16) if isinstance(
+                    tx.get("timestamp"), str) else int(tx.get("timestamp", 0))
             except Exception:
                 timestamp_int = 0
             try:
-                blocknumber_int = int(tx.get("blockNumber", "0"), 16) if isinstance(tx.get("blockNumber"), str) else int(tx.get("blockNumber", 0))
+                blocknumber_int = int(tx.get("blockNumber", "0"), 16) if isinstance(
+                    tx.get("blockNumber"), str) else int(tx.get("blockNumber", 0))
             except Exception:
                 blocknumber_int = 0
             # try:
@@ -174,13 +218,14 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
             to_val = tx.get("to")
             block_index = tx.get("index")
             value = tx.get("value")
-            
+
             if from_val is not None:
                 insert_wallet_if_missing(conn, from_val)
             if to_val is not None:
                 insert_wallet_if_missing(conn, to_val)
 
-            rows.append((tx_hash, timestamp_int, blocknumber_int, from_val, to_val, value, block_index))
+            rows.append((tx_hash, timestamp_int, blocknumber_int,
+                        from_val, to_val, value, block_index))
 
         # Insert batch and mark block processed
         insert_transactions_batch(conn, rows)
@@ -188,13 +233,18 @@ async def query_latest_n_blocks(ApiClient : ApiClient, n: int):
         processed_count += 1
 
     conn.close()
-    return { "processed_blocks": processed_count, "skipped_blocks": skipped_count }
+    return {"processed_blocks": processed_count, "skipped_blocks": skipped_count}
+
 
 def main():
     client = ApiClient()
-    data = asyncio.run(query_latest_n_blocks(client, 500))
-    open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
-    print(client.get_latest_block_number())
+    # data = asyncio.run(query_latest_n_blocks(client, 500))
+
+    # Test batch get_native_balance
+    addresses = ["0x1d0e6dd1884f0ff9121a541ebd6b11c772670974",
+                 "0x2c299edf9164aca514b69e040c2de23558fa1bc5", "0x8453fc6cd1bcfe8d4dfc069c400b433054d47bdc"]
+    print(client.get_native_balances_batch(addresses))
+
 
 if __name__ == "__main__":
     main()
