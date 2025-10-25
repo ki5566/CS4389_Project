@@ -1,4 +1,5 @@
 import requests
+import random
 import json
 from dotenv import load_dotenv
 import os
@@ -193,10 +194,95 @@ async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None)
     conn.close()
     return { "processed_blocks": processed_count, "skipped_blocks": skipped_count }
 
+def find_transaction_chain(db_path: str, length: int = 5):
+    conn = sqlite3.connect(db_path)
+    wallets = conn.execute("SELECT hash FROM wallets").fetchall()
+    chains = []
+    interactions = 0
+    for i in range(10000):
+        start_wallet = random.choice(wallets)[0]
+        # print(start_wallet)
+        in_transactions = conn.execute("SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
+        out_transactions = conn.execute("SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ?", (start_wallet,)).fetchall()
+        if(len(in_transactions) > 0 and len(out_transactions) > 0):
+            # print(f"Wallet {start_wallet} has incoming:\n {in_transactions} \n outgoing: \n {out_transactions}")
+            for tx in in_transactions:
+                from_hash, in_value, in_timestamp = tx
+                for out_tx in out_transactions:
+                    to_hash, out_value, out_timestamp = out_tx
+                    if(int(in_timestamp) < int(out_timestamp)):
+                        if abs(int(in_value, 16) - int(out_value, 16)) < max(int(in_value, 16) // (10 ** 5), 100):
+                            interactions += 1
+                            # print(f"Found interaction chain for wallet {start_wallet}:\n value: {int(in_value, 16)}\n tolerance: {max(int(in_value, 16) // (10 ** 5), 100)/int(in_value, 16)}\n timediff: {out_timestamp - in_timestamp}\n")
+                            chains.append({
+                                "value": int(in_value, 16),
+                                "chain": [from_hash, start_wallet, to_hash],
+                                "timestamps": [in_timestamp, out_timestamp]
+                            })
+    print(f"Found {len(chains)} chains to chase.")
+    for chain in chains[0:10]:
+        # print("Chasing chain:", chain)
+        # chase chain backwards
+        current_wallet = chain["chain"][0]
+        current_timestamp = chain["timestamps"][0]
+        while True:
+            found = False
+            prev_tx = conn.execute(
+                "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? AND timestamp < ? ",
+                (current_wallet,current_timestamp,)
+            ).fetchall()
+            for tx in prev_tx:
+                from_hash, value, timestamp = tx
+                if abs(int(value, 16) - chain["value"]) < max(int(value, 16) // (10 ** 5), 100) and from_hash not in chain["chain"]:
+                    chain["chain"].insert(0, from_hash)
+                    chain["timestamps"].insert(0, timestamp)
+                    current_wallet = from_hash
+                    current_timestamp = timestamp
+                    found = True
+                    break
+            if not found:
+                break
+        # chase chain forwards
+        current_wallet = chain["chain"][-1]
+        current_timestamp = chain["timestamps"][-1]
+        while True:
+            found = False
+            next_tx = conn.execute(
+                "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? AND timestamp > ? ",
+                (current_wallet,current_timestamp,)
+            ).fetchall()
+            for tx in next_tx:
+                to_hash, value, timestamp = tx
+                if abs(int(value, 16) - chain["value"]) < max(int(value, 16) // (10 ** 5), 100) and to_hash not in chain["chain"]:
+                    chain["chain"].append(to_hash)
+                    chain["timestamps"].append(timestamp)
+                    current_wallet = to_hash
+                    current_timestamp = timestamp
+                    found = True
+                    break
+            if not found:
+                break
+        # print("Chased chain to length: ", len(chain["chain"]))
+    chains = list(filter(lambda c: len(c["chain"]) >= length, chains))
+    chains = [(
+        ("value", c["value"]),
+        ("chain", tuple(c["chain"])),
+        ("timestamps", tuple(c["timestamps"]))
+    ) for c in chains]
+    final_chains = set()
+    for c in chains:
+        final_chains.add(c)
+    final_chains = [dict(t) for t in final_chains]
+    # Note THERE ARE STILL DUPLICATES.
+    print(f"Total chains longer than length {length}: {len(final_chains)}")
+    return final_chains
+
 def main():
-    client = ApiClient()
-    data = asyncio.run(query_n_blocks(client, 1000, 9472018))
-    open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
+    chains = find_transaction_chain("./blockchain.db", length=4)
+    print(json.dumps(chains, indent=4))
+    # client = ApiClient()
+    # data = asyncio.run(query_n_blocks(client, 1000, 9472018))
+    # open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
 
 if __name__ == "__main__":
     main()
