@@ -239,7 +239,6 @@ async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None)
             skipcount += 1
             block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
         if i > 0:
-        if i > 0:
             time.sleep(QUERY_DELAY)
 
         block_transactions = ApiClient.get_transactions_by_block(block_num_hex)
