@@ -3,6 +3,8 @@
 Create a .env file with
 API_KEY = YOUR_ETHERSCAN_KEY
 
+Note: Before running anything, make sure to download and add blockchain.db to the project folder (linked in our Deliverable 1 report)
+
 ### How to Run Frontend:
 1. Make sure requirements are installed
 2. Activate .venv
