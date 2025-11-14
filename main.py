@@ -378,6 +378,23 @@ def find_transaction_chain(db_path: str, length: int = 5):
     print(f"Total chains longer than length {length}: {len(final_chains)}")
     return final_chains
 
+def create_alert_dbs(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE transaction_alerts (" \
+        "   alert_id INTEGER," \
+        "   transaction_hash TEXT NOT NULL," \
+        "   PRIMARY KEY (alert_id, transaction_hash)" \
+        ");",())
+    cur.execute(
+        "CREATE TABLE account_alerts (" \
+        "   alert_id INTEGER," \
+        "   account_hash TEXT NOT NULL," \
+        "   PRIMARY KEY (alert_id, account_hash)" \
+        "   FOREIGN KEY (alert_id) REFERENCES transaction_alerts(alert_id)" \
+        ");",())
+    conn.commit()
+
 def main():
     chains = find_transaction_chain("./blockchain.db", length=4)
     print(json.dumps(chains, indent=4))
