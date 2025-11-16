@@ -1,6 +1,11 @@
 import sqlite3
 import pandas as pd
 
+def value_to_int(val):
+    if isinstance(val, str) and val.startswith('0x'):
+        return int(val, 16)
+    return val
+
 def get_transactions():
     conn = sqlite3.connect('blockchain.db')
     cur = conn.cursor()
@@ -11,10 +16,10 @@ def get_transactions():
                 """)
     
     transactions = cur.fetchall()
-    column_names = ['Transaction Hash', 'Value (wei)', 'From', 'To', 'Block', 'Timestamp']
+    column_names = ['Transaction Hash', 'Value', 'From', 'To', 'Block', 'Timestamp']
     df = pd.DataFrame(data=transactions, columns=column_names)
     df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='s')
-
+    df['Value'] = df['Value'].apply(lambda x: value_to_int(x))
     conn.close()
     return df
 
