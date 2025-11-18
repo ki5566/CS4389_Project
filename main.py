@@ -13,13 +13,13 @@ load_dotenv()
 # Wait between queries in seconds
 QUERY_DELAY = .25
 
+
 class ApiClient:
     def __init__(self):
         self.base_url = "https://api.etherscan.io/v2/api"
         self.api_key = os.getenv('API_KEY')
         if not self.api_key:
             raise ValueError("API_KEY not found in environment variables")
-
 
         self.chainid = 11155111
 
@@ -49,7 +49,6 @@ class ApiClient:
             data = response.json()
             return data.get("result")
         return None
-
 
     def get_transactions_by_block(self, block_number: str):
         block = self.get_block_by_number(block_number)
@@ -133,7 +132,6 @@ async def query_latest_block(ApiClient: ApiClient):
     return ApiClient.get_block_by_number(block_number)
 
 
-
 def ensure_db_schema(conn: sqlite3.Connection):
     """Create required tables if they don't exist.
 
@@ -179,7 +177,6 @@ def ensure_db_schema(conn: sqlite3.Connection):
     conn.commit()
 
 
-
 def insert_wallet_if_missing(conn: sqlite3.Connection, addr_str: str):
     cur = conn.cursor()
     cur.execute(
@@ -203,12 +200,10 @@ def insert_transactions_batch(conn: sqlite3.Connection, rows: list):
     conn.commit()
 
 
-
 def block_already_processed(conn: sqlite3.Connection, block_hex: int) -> bool:
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM blocks WHERE block_number = ?", (block_hex,))
     return cur.fetchone() is not None
-
 
 
 def mark_block_processed(conn: sqlite3.Connection, block_hex: int):
@@ -219,8 +214,14 @@ def mark_block_processed(conn: sqlite3.Connection, block_hex: int):
         "INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
     conn.commit()
 
-async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None):
-    block_number_hex = hex(start_block) if start_block else ApiClient.get_latest_block_number()
+
+async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse=False):
+    if reverse:
+        mult = -1
+    else:
+        mult = 1
+    block_number_hex = hex(
+        start_block) if start_block else ApiClient.get_latest_block_number()
     if not block_number_hex:
         return None
 
@@ -232,12 +233,14 @@ async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None)
     skipped_count = 0
     skipcount = 0
     for i in range(n):
-        block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
+        block_num_hex = hex(int(block_number_hex, 16) -
+                            (mult*i) - (mult*skipcount))
         # If this block already processed in DB, skip it
         while block_already_processed(conn, int(block_num_hex, 16)):
             print(f"Block {block_num_hex} already fetched, skipping...")
             skipcount += 1
-            block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
+            block_num_hex = hex(int(block_number_hex, 16) -
+                                (mult*i) - (mult*skipcount))
         if i > 0:
             time.sleep(QUERY_DELAY)
 
@@ -276,7 +279,6 @@ async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None)
             block_index = tx.get("index")
             value = tx.get("value")
 
-
             if from_val is not None:
                 insert_wallet_if_missing(conn, from_val)
             if to_val is not None:
@@ -293,7 +295,8 @@ async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None)
         processed_count += 1
 
     conn.close()
-    return { "processed_blocks": processed_count, "skipped_blocks": skipped_count }
+    return {"processed_blocks": processed_count, "skipped_blocks": skipped_count}
+
 
 def fetch_sus_chains_and_wallets(db_path: str):
     conn = sqlite3.connect(db_path)
@@ -303,16 +306,19 @@ def fetch_sus_chains_and_wallets(db_path: str):
     interactions = 0
     for i in range(10000):
         start_wallet = random.choice(wallets)[0]
+
         # print(start_wallet)
-        in_transactions = conn.execute("SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
-        out_transactions = conn.execute("SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ?", (start_wallet,)).fetchall()
-        if(len(in_transactions) > 0 and len(out_transactions) > 0):
+        in_transactions = conn.execute(
+            "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
+        out_transactions = conn.execute(
+            "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ?", (start_wallet,)).fetchall()
+        if (len(in_transactions) > 0 and len(out_transactions) > 0):
             # print(f"Wallet {start_wallet} has incoming:\n {in_transactions} \n outgoing: \n {out_transactions}")
             for tx in in_transactions:
                 from_hash, in_value, in_timestamp = tx
                 for out_tx in out_transactions:
                     to_hash, out_value, out_timestamp = out_tx
-                    if(int(in_timestamp) < int(out_timestamp)):
+                    if (int(in_timestamp) < int(out_timestamp)):
                         if abs(int(in_value, 16) - int(out_value, 16)) < max(int(in_value, 16) // (10 ** 5), 100):
                             interactions += 1
                             # print(f"Found interaction chain for wallet {start_wallet}:\n value: {int(in_value, 16)}\n tolerance: {max(int(in_value, 16) // (10 ** 5), 100)/int(in_value, 16)}\n timediff: {out_timestamp - in_timestamp}\n")
@@ -324,6 +330,7 @@ def fetch_sus_chains_and_wallets(db_path: str):
                             sus_wallets.append(start_wallet)
     print(f"Found {len(chains)} chains to chase.")
     return chains, sus_wallets
+
 
 def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
     conn = sqlite3.connect(db_path)
@@ -337,7 +344,11 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
             found = False
             prev_tx = conn.execute(
                 "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? AND timestamp < ? ",
-                (current_wallet,current_timestamp,)
+                << << << < Updated upstream
+                (current_wallet, current_timestamp,)
+                == == == =
+                (current_wallet, current_timestamp,)
+                >> >>>> > Stashed changes
             ).fetchall()
             for tx in prev_tx:
                 from_hash, value, timestamp = tx
@@ -357,7 +368,11 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
             found = False
             next_tx = conn.execute(
                 "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? AND timestamp > ? ",
-                (current_wallet,current_timestamp,)
+                << << << < Updated upstream
+                (current_wallet, current_timestamp,)
+                == == == =
+                (current_wallet, current_timestamp,)
+                >> >>>> > Stashed changes
             ).fetchall()
             for tx in next_tx:
                 to_hash, value, timestamp = tx
@@ -385,19 +400,20 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
     print(f"Total chains longer than length {length}: {len(final_chains)}")
     return final_chains
 
+
 def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
     conn = sqlite3.connect(db_path)
     wallets = []
     for start_wallet in sus_wallets:
         in_txs = conn.execute(
-                "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? ",
-                (start_wallet,)
-            ).fetchall()
-        
+            "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? ",
+            (start_wallet,)
+        ).fetchall()
+
         out_txs = conn.execute(
-                "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? ",
-                (start_wallet,)
-            ).fetchall()
+            "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? ",
+            (start_wallet,)
+        ).fetchall()
         all_txs = [{
             "type": "in",
             "to_hash": tx.to_hash,
@@ -425,32 +441,38 @@ def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
     print("Wallet interaction counts:\n", wallets)
     return wallets
 
+
 def create_alert_dbs(conn: sqlite3.Connection):
     cur = conn.cursor()
     cur.execute(
-        "CREATE TABLE transaction_alerts (" \
-        "   alert_id INTEGER," \
-        "   transaction_hash TEXT NOT NULL," \
-        "   PRIMARY KEY (alert_id, transaction_hash)" \
-        ");",())
+        "CREATE TABLE transaction_alerts ("
+        "   alert_id INTEGER,"
+        "   transaction_hash TEXT NOT NULL,"
+        "   PRIMARY KEY (alert_id, transaction_hash)"
+        ");", ())
     cur.execute(
-        "CREATE TABLE account_alerts (" \
-        "   alert_id INTEGER," \
-        "   account_hash TEXT NOT NULL," \
-        "   PRIMARY KEY (alert_id, account_hash)" \
-        "   FOREIGN KEY (alert_id) REFERENCES transaction_alerts(alert_id)" \
-        ");",())
+        "CREATE TABLE account_alerts ("
+        "   alert_id INTEGER,"
+        "   account_hash TEXT NOT NULL,"
+        "   PRIMARY KEY (alert_id, account_hash)"
+        "   FOREIGN KEY (alert_id) REFERENCES transaction_alerts(alert_id)"
+        ");", ())
     conn.commit()
 
-def main():
-    sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
-    chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
-    wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
 
-    print(json.dumps(chains, indent=4))
-    # client = ApiClient()
-    # data = asyncio.run(query_n_blocks(client, 1000, 9472018))
-    # open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
+def main():
+
+
+sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
+chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
+wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
+
+print(json.dumps(chains, indent=4))
+# client = ApiClient()
+# data = asyncio.run(query_n_blocks(client, 1000, 9472018))
+client = ApiClient()
+data = asyncio.run(query_n_blocks(client, 10000, 9476668, reverse=True))
+# open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
 
 if __name__ == "__main__":
     main()
