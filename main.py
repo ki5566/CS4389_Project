@@ -344,11 +344,7 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
             found = False
             prev_tx = conn.execute(
                 "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? AND timestamp < ? ",
-                << << << < Updated upstream
                 (current_wallet, current_timestamp,)
-                == == == =
-                (current_wallet, current_timestamp,)
-                >> >>>> > Stashed changes
             ).fetchall()
             for tx in prev_tx:
                 from_hash, value, timestamp = tx
@@ -368,11 +364,7 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
             found = False
             next_tx = conn.execute(
                 "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? AND timestamp > ? ",
-                << << << < Updated upstream
                 (current_wallet, current_timestamp,)
-                == == == =
-                (current_wallet, current_timestamp,)
-                >> >>>> > Stashed changes
             ).fetchall()
             for tx in next_tx:
                 to_hash, value, timestamp = tx
