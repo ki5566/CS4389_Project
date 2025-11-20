@@ -301,7 +301,7 @@ async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse
 def fetch_sus_chains_and_wallets(db_path: str):
     conn = sqlite3.connect(db_path)
     wallets = conn.execute("SELECT hash FROM wallets").fetchall()
-    sus_wallets = []
+    sus_wallets = set()
     chains = []
     interactions = 0
     for i in range(10000):
@@ -327,10 +327,9 @@ def fetch_sus_chains_and_wallets(db_path: str):
                                 "chain": [from_hash, start_wallet, to_hash],
                                 "timestamps": [in_timestamp, out_timestamp]
                             })
-                            sus_wallets.append(start_wallet)
+                            sus_wallets.add(start_wallet)
     print(f"Found {len(chains)} chains to chase.")
-    return chains, sus_wallets
-
+    return chains, list(sus_wallets)
 
 def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
     conn = sqlite3.connect(db_path)
@@ -392,7 +391,7 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
     print(f"Total chains longer than length {length}: {len(final_chains)}")
     return final_chains
 
-
+# Set threshold at 15
 def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
     conn = sqlite3.connect(db_path)
     wallets = []
@@ -408,12 +407,14 @@ def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
         ).fetchall()
         all_txs = [{
             "type": "in",
-            "to_hash": tx.to_hash,
-            "value": tx.value
+            "to_hash": tx[0],
+            "value": tx[1],
+            "timestamp": tx[2]
         } for tx in in_txs] + [{
             "type": "out",
-            "from_hash": tx.from_hash,
-            "value": tx.value
+            "from_hash": tx[0],
+            "value": tx[1],
+            "timestamp": tx[2]
         } for tx in out_txs]
         all_txs.sort(key=lambda x: x["timestamp"])
         counter = 0
@@ -430,7 +431,8 @@ def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
                     counter += 1
                     break
         wallets.append({"wallet": start_wallet, "count": counter})
-    print("Wallet interaction counts:\n", wallets)
+    wallets = list(filter(lambda x: x["count"] >= 15, wallets))
+    wallets.sort(key=lambda x: x["count"], reverse=True)
     return wallets
 
 
@@ -453,18 +455,16 @@ def create_alert_dbs(conn: sqlite3.Connection):
 
 
 def main():
+    sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
+    # chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
+    wallets = fetch_wallet_repeats("./blockchain.db", sus_wallets)
 
-
-sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
-chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
-wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
-
-print(json.dumps(chains, indent=4))
-# client = ApiClient()
-# data = asyncio.run(query_n_blocks(client, 1000, 9472018))
-client = ApiClient()
-data = asyncio.run(query_n_blocks(client, 10000, 9476668, reverse=True))
-# open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
+    print(json.dumps(wallets, indent=4))
+    # client = ApiClient()
+    # data = asyncio.run(query_n_blocks(client, 1000, 9472018))
+    # client = ApiClient()
+    # data = asyncio.run(query_n_blocks(client, 10000, 9476668, reverse=True))
+    # open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
 
 if __name__ == "__main__":
     main()
