@@ -487,8 +487,7 @@ def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
     wallets = list(filter(lambda x: x["count"] >= 15, wallets))
     wallets.sort(key=lambda x: x["count"], reverse=True)
     return wallets
-
-
+  
 def create_alert_dbs(conn: sqlite3.Connection):
     cur = conn.cursor()
     cur.execute(
@@ -506,13 +505,26 @@ def create_alert_dbs(conn: sqlite3.Connection):
         ");", ())
     conn.commit()
 
+def clean_wallets_db(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute("DELETE FROM wallets")
+    wallets = conn.execute(
+            "SELECT from_hash as wallet FROM transactions WHERE value > 0 UNION SELECT to_hash as wallet FROM transactions WHERE value > 0",
+            ()
+        ).fetchall()
+    for wallet in wallets:
+        conn.execute(
+            "INSERT OR IGNORE INTO wallets (hash) VALUES (?)", (wallet[0],)
+            )
+    conn.commit()
+
 
 def main():
     # sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
     # chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
     # wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
 
-    # print(json.dumps(chains, indent=4))
+    # # print(json.dumps(chains, indent=4))
     # client = ApiClient()
     # data = asyncio.run(query_n_blocks(client, 1000, 9472018))
     client = ApiClient()
