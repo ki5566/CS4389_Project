@@ -1,11 +1,5 @@
 # Mitigation of Blockchain Fraud – CS4389 Final Project
 
-This repository is a **merged, cleaned-up version** of three development branches:
-
-- `CS4389_Project-main`
-- `CS4389_Project-add-wallet-chaining`
-- `CS4389_Project-add-dos-protection`
-
 It implements a **lightweight blockchain fraud monitoring prototype** for the Ethereum Sepolia testnet:
 
 - Ingests blocks and transactions from Etherscan
@@ -30,4 +24,3 @@ QUERY_DELAY=0.25
 DEFAULT_BLOCK_WINDOW=200
 ```
 
-See `docs/` for Deliverable 2 write-up skeleton, API notes, and rule descriptions.
