@@ -143,6 +143,11 @@ def ensure_db_schema(conn: sqlite3.Connection):
     - blocks(block_number TEXT PRIMARY KEY) -- to track processed blocks
     """
     cur = conn.cursor()
+
+    # Enable foreign keys
+    # cur.execute( "PRAGMA foreign_keys = ON" )
+    cur.execute("PRAGMA foreign_keys = OFF")
+    
     cur.execute(
         """CREATE TABLE IF NOT EXISTS blocks (
             block_number INTEGER PRIMARY KEY
@@ -150,28 +155,62 @@ def ensure_db_schema(conn: sqlite3.Connection):
     )
     cur.execute(
         """CREATE TABLE IF NOT EXISTS wallets (
-            hash STRING PRIMARY KEY,
-            balance INTEGER DEFAULT 0,
-            last_updated_block_number INTEGER REFERENCES blocks(block_number) DEFAULT 0
-        )"""
-    )
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS wallets (
-            hash STRING PRIMARY KEY,
+            hash TEXT PRIMARY KEY,
             balance INTEGER DEFAULT 0,
             last_updated_block_number INTEGER REFERENCES blocks(block_number) DEFAULT 0
         )"""
     )
     cur.execute(
         """CREATE TABLE IF NOT EXISTS transactions (
-            hash STRING PRIMARY KEY,
+            hash TEXT PRIMARY KEY,
             timestamp INTEGER,
             blocknumber INTEGER REFERENCES blocks(block_number),
-            blocknumber INTEGER REFERENCES blocks(block_number),
-            from_hash STRING REFERENCES wallets(hash),
-            to_hash STRING REFERENCES wallets(hash),
-            value STRING,
+            from_hash TEXT REFERENCES wallets(hash),
+            to_hash TEXT REFERENCES wallets(hash),
+            value TEXT,
             block_index INTEGER
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS chain_alerts (
+            alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chain_length INTEGER
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS chain_alert_transactions (
+            alert_id INTEGER REFERENCES chain_alerts(alert_id) ON DELETE CASCADE,
+            transaction_hash TEXT REFERENCES transactions(hash) ON DELETE CASCADE,
+            PRIMARY KEY (alert_id, transaction_hash)
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS chain_alert_wallets (
+            alert_id INTEGER REFERENCES chain_alerts(alert_id) ON DELETE CASCADE,
+            wallet TEXT REFERENCES wallets(hash) ON DELETE CASCADE,
+            PRIMARY KEY (alert_id, wallet)
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS wallet_alerts (
+            alert_id INTEGER ,
+            wallet TEXT REFERENCES wallets(hash) ON DELETE CASCADE,
+            PRIMARY KEY (alert_id, wallet)
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS wallet_alert_transaction_pairs(
+            alert_id INTEGER REFERENCES wallet_alerts(alert_id) ON DELETE CASCADE,
+            in_transaction TEXT REFERENCES transactions(hash) ON DELETE CASCADE,
+            out_transaction TEXT REFERENCES transactions(hash) ON DELETE CASCADE,
+            PRIMARY KEY (alert_id, in_transaction, out_transaction)
+        )"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS dos_alerts(
+            alert_id INTEGER,
+            wallet TEXT REFERENCES wallets(hash) ON DELETE CASCADE,
+            PRIMARY KEY (alert_id, wallet)
         )"""
     )
     conn.commit()
@@ -195,6 +234,20 @@ def insert_transactions_batch(conn: sqlite3.Connection, rows: list):
     cur = conn.cursor()
     cur.executemany(
         "INSERT OR IGNORE INTO transactions (hash, timestamp, blocknumber, from_hash, to_hash, value, block_index) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+
+
+def insert_alerts_batch(conn: sqlite3.Connection, rows: list):
+    """Insert a batch of alerts. Each row is a tuple matching alerts table.
+    (alert_id, account_hash)
+    """
+    if not rows:
+        return
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT OR IGNORE INTO (alert_id, account_hash) VALUES (?, ?)",
         rows,
     )
     conn.commit()
@@ -454,17 +507,17 @@ def create_alert_dbs(conn: sqlite3.Connection):
 
 def main():
 
+    # sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
+    # chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
+    # wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
 
-sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
-chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
-wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
+    # print(json.dumps(chains, indent=4))
+    # client = ApiClient()
+    # data = asyncio.run(query_n_blocks(client, 1000, 9472018))
+    client = ApiClient()
+    asyncio.run(query_n_blocks(client, 10000, 9477668, reverse=True))
+    # open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
 
-print(json.dumps(chains, indent=4))
-# client = ApiClient()
-# data = asyncio.run(query_n_blocks(client, 1000, 9472018))
-client = ApiClient()
-data = asyncio.run(query_n_blocks(client, 10000, 9476668, reverse=True))
-# open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
 
 if __name__ == "__main__":
     main()
