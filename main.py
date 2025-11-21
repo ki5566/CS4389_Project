@@ -350,27 +350,38 @@ async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse
     conn.close()
     return {"processed_blocks": processed_count, "skipped_blocks": skipped_count}
 
+def fetch_transacting_wallets(db_conn):
+    in_wallets = set(db_conn.execute(
+        "SELECT DISTINCT from_hash FROM transactions"
+    ).fetchall())
+    out_wallets = set(db_conn.execute(
+        "SELECT DISTINCT to_hash FROM transactions"
+    ).fetchall())
+
+    return [wallet[0] for wallet in list(in_wallets.intersection(out_wallets))]
 
 def fetch_sus_chains_and_wallets(db_path: str):
     conn = sqlite3.connect(db_path)
-    wallets = conn.execute("SELECT hash FROM wallets").fetchall()
     sus_wallets = set()
     chains = []
     interactions = 0
-    for i in range(10000):
-        start_wallet = random.choice(wallets)[0]
-
-        # print(start_wallet)
+    print("Fetching suspicious wallets and potential chains:")
+    search_wallets = fetch_transacting_wallets(conn)
+    progress = 0
+    total = len(search_wallets)
+    print(f"Total wallets to search: {total}")
+    for start_wallet in search_wallets:
+        print(f"Progress: {progress/total*100:.2f}%")
         in_transactions = conn.execute(
-            "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
+            "SELECT from_hash, value, timestamp, hash FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
         out_transactions = conn.execute(
-            "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ?", (start_wallet,)).fetchall()
+            "SELECT to_hash, value, timestamp, hash FROM transactions WHERE from_hash = ?", (start_wallet,)).fetchall()
         if (len(in_transactions) > 0 and len(out_transactions) > 0):
             # print(f"Wallet {start_wallet} has incoming:\n {in_transactions} \n outgoing: \n {out_transactions}")
             for tx in in_transactions:
-                from_hash, in_value, in_timestamp = tx
+                from_hash, in_value, in_timestamp, in_tx_hash = tx
                 for out_tx in out_transactions:
-                    to_hash, out_value, out_timestamp = out_tx
+                    to_hash, out_value, out_timestamp, out_tx_hash = out_tx
                     if (int(in_timestamp) < int(out_timestamp)):
                         if abs(int(in_value, 16) - int(out_value, 16)) < max(int(in_value, 16) // (10 ** 5), 100):
                             interactions += 1
@@ -378,16 +389,22 @@ def fetch_sus_chains_and_wallets(db_path: str):
                             chains.append({
                                 "value": int(in_value, 16),
                                 "chain": [from_hash, start_wallet, to_hash],
+                                "transactions": [in_tx_hash, out_tx_hash],
                                 "timestamps": [in_timestamp, out_timestamp]
                             })
                             sus_wallets.add(start_wallet)
+        progress += 1
     print(f"Found {len(chains)} chains to chase.")
     return chains, list(sus_wallets)
 
 def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
     conn = sqlite3.connect(db_path)
-    wallets = conn.execute("SELECT hash FROM wallets").fetchall()
-    for chain in potential_chains[0:10]:
+    progress = 0
+    total = len(potential_chains)
+    print("Chasing potential chains:")
+    for chain in potential_chains:
+        value_len = len(hex(chain["value"]))
+        print(f"Progress: {progress/total*100:.2f}%")
         # print("Chasing chain:", chain)
         # chase chain backwards
         current_wallet = chain["chain"][0]
@@ -395,13 +412,14 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
         while True:
             found = False
             prev_tx = conn.execute(
-                "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? AND timestamp < ? ",
-                (current_wallet, current_timestamp,)
+                "SELECT from_hash, value, timestamp, hash FROM transactions WHERE to_hash = ? AND timestamp < ? AND LENGTH(value) > ? AND LENGTH(value) < ? ORDER BY timestamp DESC",
+                (current_wallet, current_timestamp,value_len-2, value_len+2,)
             ).fetchall()
             for tx in prev_tx:
-                from_hash, value, timestamp = tx
+                from_hash, value, timestamp, tx_hash = tx
                 if abs(int(value, 16) - chain["value"]) < max(int(value, 16) // (10 ** 5), 100) and from_hash not in chain["chain"]:
                     chain["chain"].insert(0, from_hash)
+                    chain["transactions"].insert(0, tx_hash)
                     chain["timestamps"].insert(0, timestamp)
                     current_wallet = from_hash
                     current_timestamp = timestamp
@@ -415,13 +433,14 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
         while True:
             found = False
             next_tx = conn.execute(
-                "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? AND timestamp > ? ",
-                (current_wallet, current_timestamp,)
+                "SELECT to_hash, value, timestamp, hash FROM transactions WHERE from_hash = ? AND timestamp > ? AND LENGTH(value) > ? AND LENGTH(value) < ? ORDER BY timestamp ASC",
+                (current_wallet, current_timestamp,value_len-2, value_len+2,)
             ).fetchall()
             for tx in next_tx:
-                to_hash, value, timestamp = tx
+                to_hash, value, timestamp, tx_hash = tx
                 if abs(int(value, 16) - chain["value"]) < max(int(value, 16) // (10 ** 5), 100) and to_hash not in chain["chain"]:
                     chain["chain"].append(to_hash)
+                    chain["transactions"].append(tx_hash)
                     chain["timestamps"].append(timestamp)
                     current_wallet = to_hash
                     current_timestamp = timestamp
@@ -429,65 +448,106 @@ def find_transaction_chain(db_path: str, potential_chains, length: int = 5):
                     break
             if not found:
                 break
-        # print("Chased chain to length: ", len(chain["chain"]))
-    chains = list(filter(lambda c: len(c["chain"]) >= length, chains))
-    chains = [(
-        ("value", c["value"]),
-        ("chain", tuple(c["chain"])),
-        ("timestamps", tuple(c["timestamps"]))
-    ) for c in chains]
-    final_chains = set()
-    for c in chains:
-        final_chains.add(c)
-    final_chains = [dict(t) for t in final_chains]
-    # Note THERE ARE STILL DUPLICATES.
-    print(f"Total chains longer than length {length}: {len(final_chains)}")
-    return final_chains
+        progress += 1
+    chains = list(filter(lambda c: len(c["timestamps"]) >= length, potential_chains))
+    chains.sort(key=lambda x: len(x["timestamps"]), reverse=True)
+    print("Chains found:", len(chains))
+    return chains
 
 # Set threshold at 15
-def fetch_wallet_repeats(db_path: str, sus_wallets: list[str]):
+def fetch_wallet_repeats(db_path: str, sus_wallets: list[str], threshold: int = 15):
     conn = sqlite3.connect(db_path)
     wallets = []
     for start_wallet in sus_wallets:
+        sus_tx_pairs = []
         in_txs = conn.execute(
-            "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? ",
-            (start_wallet,)
+            "SELECT from_hash, value, timestamp, hash FROM transactions WHERE to_hash = ? AND from_hash != ?",
+            (start_wallet, start_wallet,)
         ).fetchall()
 
         out_txs = conn.execute(
-            "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? ",
-            (start_wallet,)
+            "SELECT to_hash, value, timestamp, hash FROM transactions WHERE from_hash = ? AND to_hash != ?",
+            (start_wallet, start_wallet,)
         ).fetchall()
         all_txs = [{
             "type": "in",
+            "hash": tx[3],
             "to_hash": tx[0],
             "value": tx[1],
             "timestamp": tx[2]
         } for tx in in_txs] + [{
             "type": "out",
+            "hash": tx[3],
             "from_hash": tx[0],
             "value": tx[1],
             "timestamp": tx[2]
         } for tx in out_txs]
         all_txs.sort(key=lambda x: x["timestamp"])
         counter = 0
+        j = 0
         for i in range(len(all_txs)-1):
             tx1 = all_txs[i]
             if tx1["type"] != "in":
                 continue
-            for tx2 in all_txs[i+1:]:
+            j = max(j, i+1)
+            for tx2 in all_txs[j:]:
+                j += 1
                 if tx1["type"] == tx2["type"]:
                     continue
                 if tx2["timestamp"] - tx1["timestamp"] > 3600:
                     break
                 if abs(int(tx1["value"], 16) - int(tx2["value"], 16)) < max(int(tx1["value"], 16) // (10 ** 5), 100):
+                    sus_tx_pairs.append((tx1, tx2))
                     counter += 1
                     break
-        wallets.append({"wallet": start_wallet, "count": counter})
-    wallets = list(filter(lambda x: x["count"] >= 15, wallets))
+        wallets.append({"wallet": start_wallet, "count": counter, "sus_tx_pairs": sus_tx_pairs})
+    wallets = list(filter(lambda x: x["count"] >= threshold, wallets))
     wallets.sort(key=lambda x: x["count"], reverse=True)
     return wallets
-  
+
+def create_alerts(conn: sqlite3.Connection, wallets, chains):
+    cur = conn.cursor()
+    alert_id = 1
+    for chain in chains:
+        cur.execute(
+            "INSERT INTO chain_alerts (alert_id, chain_length) VALUES (?, ?)", (alert_id, len(chain["chain"]))
+        )
+        for tx_hash in chain["transactions"]:
+            cur.execute(
+                "INSERT INTO chain_alert_transactions (alert_id, transaction_hash) VALUES (?, ?)",
+                (alert_id, tx_hash)
+            )
+        for wallet in chain["chain"]:
+            cur.execute(
+                "INSERT OR IGNORE INTO chain_alert_wallets (alert_id, wallet) VALUES (?, ?)",
+                (alert_id, wallet)
+            )
+        alert_id += 1
+    alert_id = 1
+    for wallet in wallets:
+        cur.execute(
+            "INSERT INTO wallet_alerts (alert_id, wallet) VALUES (?, ?)", (alert_id, wallet["wallet"])
+        )
+        for tx_pair in wallet["sus_tx_pairs"]:
+            in_tx = tx_pair[0]
+            out_tx = tx_pair[1]
+            cur.execute(
+                "INSERT INTO wallet_alert_transaction_pairs (alert_id, in_transaction, out_transaction) VALUES (?, ?, ?)",
+                (alert_id, in_tx["hash"], out_tx["hash"])
+            )
+        alert_id += 1
+    conn.commit()
+
+def clean_alerts(db_path: str):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM chain_alert_transactions")
+    cur.execute("DELETE FROM chain_alert_wallets")
+    cur.execute("DELETE FROM chain_alerts")
+    cur.execute("DELETE FROM wallet_alert_transaction_pairs")
+    cur.execute("DELETE FROM wallet_alerts")
+    conn.commit()
+
 def create_alert_dbs(conn: sqlite3.Connection):
     cur = conn.cursor()
     cur.execute(
@@ -518,18 +578,49 @@ def clean_wallets_db(conn: sqlite3.Connection):
             )
     conn.commit()
 
+def create_indexes_db(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash);", ()
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_value_len ON transactions(LENGTH(value));", ()
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_from_hash ON transactions(from_hash);", ()
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_to_hash ON transactions(to_hash);", ()
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp);", ()
+    )
+    conn.commit()
 
 def main():
+    # create_indexes_db(sqlite3.connect("./blockchain.db"))
     # sus_chains, sus_wallets = fetch_sus_chains_and_wallets("./blockchain.db")
-    # chains = find_transaction_chain("./blockchain.db", sus_chains, length=4)
-    # wallets = fetch_wallet_chains("./blockchain.db", sus_wallets)
+    # with open("./data/sus_chains.json", "w") as f:
+    #     f.write(json.dumps(sus_chains, indent=2))
+    # with open("./data/sus_wallets.json", "w") as f:
+    #     f.write(json.dumps(sus_wallets, indent=2))
 
-    # # print(json.dumps(chains, indent=4))
+    clean_alerts("./blockchain.db")
+
+    sus_chains = json.load(open("./data/chains.json", "r"))
+    # chains = find_transaction_chain("./blockchain.db", sus_chains, length=6)
+    # with open("./data/chains.json", "w") as f:
+    #     f.write(json.dumps(chains, indent=2))
+
+    sus_wallets = json.load(open("./data/wallets.json", "r"))
+    # wallets = fetch_wallet_repeats("./blockchain.db", sus_wallets, threshold=15)
+    # with open("./data/wallets.json", "w") as f:
+    #     f.write(json.dumps(wallets, indent=2))
+
+    create_alerts(sqlite3.connect("./blockchain.db"), sus_wallets, sus_chains)
+
     # client = ApiClient()
-    # data = asyncio.run(query_n_blocks(client, 1000, 9472018))
-    client = ApiClient()
-    asyncio.run(query_n_blocks(client, 10000, 9477668, reverse=True))
-    # open("./data/transactions.json", "w").write(json.dumps(data, indent=4))
+    # asyncio.run(query_n_blocks(client, 10000, 9477668, reverse=True))
 
 
 if __name__ == "__main__":
