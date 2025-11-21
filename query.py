@@ -464,50 +464,113 @@ def get_alert_summary() -> Dict[str, int]:
     with get_connection() as conn:
         cur = conn.cursor()
 
-        # Check if alert tables exist
         cur.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name IN ('alerts', 'transaction_alerts', 'account_alerts')
+            SELECT COUNT(alert_id) as chain_alerts
+            FROM chain_alerts
         """)
-        tables = [row[0] for row in cur.fetchall()]
+        chain_alerts = cur.fetchone()
 
-        if 'alerts' in tables:
-            # Get alert counts by type
-            cur.execute("""
-                SELECT 
-                    COUNT(CASE WHEN alert_type = 'transaction' THEN 1 END) as tx_alerts,
-                    COUNT(CASE WHEN alert_type = 'account' THEN 1 END) as acct_alerts,
-                    COUNT(*) as total
-                FROM alerts
-            """)
-            result = cur.fetchone()
-            if result:
-                return {
-                    "transaction_alerts": result[0] or 0,
-                    "account_alerts": result[1] or 0,
-                    "total": result[2] or 0
-                }
-
-        # Fallback
-        tx_alerts = 0
-        acct_alerts = 0
-
-        if 'transaction_alerts' in tables:
-            cur.execute("SELECT COUNT(DISTINCT alert_id) FROM transaction_alerts")
-            result = cur.fetchone()
-            tx_alerts = result[0] if result else 0
-
-        if 'account_alerts' in tables:
-            cur.execute("SELECT COUNT(DISTINCT alert_id) FROM account_alerts")
-            result = cur.fetchone()
-            acct_alerts = result[0] if result else 0
+        cur.execute("""
+            SELECT COUNT(alert_id) as wallet_alerts
+            FROM wallet_alerts
+        """)
+        wallet_alerts = cur.fetchone()
 
         return {
-            "transaction_alerts": tx_alerts,
-            "account_alerts": acct_alerts,
-            "total": tx_alerts + acct_alerts
+            "chain_alerts": chain_alerts[0],
+            "wallet_alerts": wallet_alerts[0],
+            "total": chain_alerts[0] + wallet_alerts[0]
         }
 
+
+def get_chain_priority(chain_len: int) -> str:
+    if chain_len >= 20:
+        return 'high'
+    elif chain_len >= 10:
+        return 'med'
+    else:
+        return 'low'
+
+def get_wallet_priority(tx_val) -> str:
+    val_in_eth = wei_to_eth(value_to_int(tx_val))
+
+    if val_in_eth >= 0.1:
+        return 'high'
+    elif val_in_eth >= 0.01:
+        return 'med'
+    else:
+        return 'low'
+    
+def get_full_alert_data():
+    with get_connection() as conn:
+        cur = conn.cursor()
+
+        all_alerts = pd.DataFrame(columns=['alert_id', 'type', 'priority', 'timestamp'])
+        
+        cur.execute("""
+            SELECT chain_alerts.alert_id, chain_length, time
+            FROM chain_alerts JOIN 
+                (SELECT alert_id, MAX(timestamp) AS time
+                FROM chain_alert_transactions AS chain_txs JOIN transactions AS txs
+                    ON chain_txs.transaction_hash = txs.hash
+                GROUP BY alert_id) AS alert_times
+            ON chain_alerts.alert_id = alert_times.alert_id
+        """)
+        chain_alerts = cur.fetchall()
+
+        for alert_id, chain_len, time in chain_alerts:
+            all_alerts.loc[len(all_alerts)] = [alert_id, 'chain', get_chain_priority(int(chain_len)), time]
+
+        cur.execute("""
+            SELECT alert_id, AVG(value), MAX(timestamp)
+            FROM
+                (SELECT alert_id, value, timestamp
+                FROM wallet_alert_transaction_pairs AS wall_pairs JOIN transactions AS txs 
+                        ON wall_pairs.out_transaction = txs.hash)
+            GROUP BY alert_id
+        """)
+        wallet_alerts = cur.fetchall()
+
+        for alert_id, value, time in wallet_alerts:
+            all_alerts.loc[len(all_alerts)] = [alert_id, 'wallet', get_wallet_priority(value), time]
+
+        return all_alerts
+
+def get_alert_info(alert_id, type):
+    with get_connection() as conn:
+        cur = conn.cursor()
+    
+        if type == 'chain':
+            cur.execute(f"SELECT chain_length FROM chain_alerts WHERE alert_id = '{alert_id}'")
+            chain_len = cur.fetchone()[0]
+            tx_info = pd.read_sql_query(f"""
+                            SELECT * 
+                            FROM chain_alert_transactions AS chain_txs JOIN transactions AS txs
+                                ON chain_txs.transaction_hash = txs.hash
+                            WHERE chain_txs.alert_id = '{alert_id}'
+                        """, conn)
+            
+            return {"chain_len": chain_len, "tx_info": tx_info}
+        
+        elif type == 'wallet':
+            cur.execute(f"SELECT wallet FROM wallet_alerts WHERE alert_id = '{alert_id}'")
+            wallet = cur.fetchone()[0]
+            tx_info = pd.read_sql_query(f"""
+                    SELECT in_hash, out_hash, in_value, out_value    
+                    FROM
+                        (SELECT wallet_pairs.rowid AS id, hash AS in_hash, value AS in_value
+                        FROM wallet_alert_transaction_pairs AS wallet_pairs JOIN transactions AS txs
+                            ON wallet_pairs.in_transaction = txs.hash
+                        WHERE alert_id = '{alert_id}') AS in_txs
+                    JOIN
+                        (SELECT wallet_pairs.rowid AS id, hash AS out_hash, value AS out_value
+                        FROM wallet_alert_transaction_pairs AS wallet_pairs JOIN transactions AS txs
+                            ON wallet_pairs.out_transaction = txs.hash
+                        WHERE alert_id = '{alert_id}') AS out_txs
+                    ON in_txs.id = out_txs.id
+                    ORDER BY in_txs.id
+            """, conn)
+            return {"wallet": wallet, "tx_info": tx_info}
 
 def get_total_alert_count() -> int:
     """Get total alert count."""
@@ -553,14 +616,14 @@ def get_suspicious_patterns() -> Dict[str, List]:
                 SELECT from_hash as address, COUNT(*) as tx_count
                 FROM transactions
                 GROUP BY from_hash
-                HAVING COUNT(*) > 100
+                HAVING COUNT(*) > 20
 
                 UNION ALL
 
                 SELECT to_hash as address, COUNT(*) as tx_count
                 FROM transactions
                 GROUP BY to_hash
-                HAVING COUNT(*) > 100
+                HAVING COUNT(*) > 20
             )
             GROUP BY address
             ORDER BY total_tx DESC

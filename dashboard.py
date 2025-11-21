@@ -140,7 +140,6 @@ def create_daily_volume_chart(df: pd.DataFrame) -> go.Figure:
     )
 
     fig.update_layout(
-        title_text="Daily Volume (ETH)",
         xaxis_title="Date",
         yaxis_title="ETH",
         height=400,
@@ -210,7 +209,6 @@ def create_value_distribution(df: pd.DataFrame) -> go.Figure:
     ])
 
     fig.update_layout(
-        title="Transaction Value Distribution",
         xaxis_title="log10(Value ETH)",
         yaxis_title="Count",
         height=400,
@@ -523,7 +521,6 @@ def main():
                             ))
 
                             fig.update_layout(
-                                title=f"Average Transaction Value by Hour - {date}",
                                 xaxis_title="Time of Day",
                                 yaxis_title="Avg Value (ETH)",
                                 height=350,
@@ -587,9 +584,9 @@ def main():
             # Alert metrics
             cols = st.columns(3)
             with cols[0]:
-                st.metric("Transaction Alerts", alert_summary["transaction_alerts"])
+                st.metric("Chain Alerts", alert_summary["chain_alerts"])
             with cols[1]:
-                st.metric("Account Alerts", alert_summary["account_alerts"])
+                st.metric("Wallet Alerts", alert_summary["wallet_alerts"])
             with cols[2]:
                 st.metric("Total Alerts", summary["total_alerts"])
 
