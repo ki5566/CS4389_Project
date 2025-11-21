@@ -97,37 +97,6 @@ class ApiClient:
 
 
 async def query_latest_block(ApiClient: ApiClient):
-    def get_native_balance(self, address: str, block_number: str = "latest"):
-        response = requests.get(self.base_url, params={
-            "chainid": self.chainid,
-            "module": "account",
-            "action": "balance",
-            "address": address,
-            "tag": block_number,
-            "apikey": self.api_key
-        })
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("result")
-        return None
-
-    def get_native_balances_batch(self, addresses: list[str], block_number: str = "latest"):
-        address_str = ",".join(addresses)
-        response = requests.get(self.base_url, params={
-            "chainid": self.chainid,
-            "module": "account",
-            "action": "balancemulti",
-            "address": address_str,
-            "tag": block_number,
-            "apikey": self.api_key
-        })
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("result")
-        return None
-
-
-async def query_latest_block(ApiClient: ApiClient):
     block_number = ApiClient.get_latest_block_number()
     return ApiClient.get_block_by_number(block_number)
 
@@ -136,8 +105,6 @@ def ensure_db_schema(conn: sqlite3.Connection):
     """Create required tables if they don't exist.
 
     - wallets(hash INTEGER PRIMARY KEY, balance INTEGER)
-    - transactions(hash INTEGER PRIMARY KEY, timestamp INTEGER, blocknumber INTEGER,
-                   from_hash INTEGER, to_hash INTEGER, value INTEGER)
     - transactions(hash INTEGER PRIMARY KEY, timestamp INTEGER, blocknumber INTEGER,
                    from_hash INTEGER, to_hash INTEGER, value INTEGER)
     - blocks(block_number TEXT PRIMARY KEY) -- to track processed blocks
@@ -156,17 +123,9 @@ def ensure_db_schema(conn: sqlite3.Connection):
         )"""
     )
     cur.execute(
-        """CREATE TABLE IF NOT EXISTS wallets (
-            hash STRING PRIMARY KEY,
-            balance INTEGER DEFAULT 0,
-            last_updated_block_number INTEGER REFERENCES blocks(block_number) DEFAULT 0
-        )"""
-    )
-    cur.execute(
         """CREATE TABLE IF NOT EXISTS transactions (
             hash STRING PRIMARY KEY,
             timestamp INTEGER,
-            blocknumber INTEGER REFERENCES blocks(block_number),
             blocknumber INTEGER REFERENCES blocks(block_number),
             from_hash STRING REFERENCES wallets(hash),
             to_hash STRING REFERENCES wallets(hash),
@@ -179,9 +138,6 @@ def ensure_db_schema(conn: sqlite3.Connection):
 
 def insert_wallet_if_missing(conn: sqlite3.Connection, addr_str: str):
     cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO wallets (hash, balance) VALUES (?, 0)", (addr_str,))
-
     cur.execute(
         "INSERT OR IGNORE INTO wallets (hash, balance) VALUES (?, 0)", (addr_str,))
 
@@ -211,14 +167,9 @@ def mark_block_processed(conn: sqlite3.Connection, block_hex: int):
     cur = conn.cursor()
     cur.execute(
         "INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
-    cur.execute(
-        "INSERT OR IGNORE INTO blocks (block_number) VALUES (?)", (block_hex,))
     conn.commit()
 
-async def query_n_blocks(ApiClient : ApiClient, n: int, start_block: int = None):
-    block_number_hex = hex(start_block) if start_block else ApiClient.get_latest_block_number()
-
-async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse=False):
+async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int = None, reverse=False):
     if reverse:
         mult = -1
     else:
@@ -236,14 +187,12 @@ async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse
     skipped_count = 0
     skipcount = 0
     for i in range(n):
-        block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
         block_num_hex = hex(int(block_number_hex, 16) -
                             (mult*i) - (mult*skipcount))
         # If this block already processed in DB, skip it
         while block_already_processed(conn, int(block_num_hex, 16)):
             print(f"Block {block_num_hex} already fetched, skipping...")
             skipcount += 1
-            block_num_hex = hex(int(block_number_hex, 16) - i - skipcount)
             block_num_hex = hex(int(block_number_hex, 16) -
                                 (mult*i) - (mult*skipcount))
         if i > 0:
@@ -263,13 +212,9 @@ async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse
             try:
                 timestamp_int = int(tx.get("timestamp", "0"), 16) if isinstance(
                     tx.get("timestamp"), str) else int(tx.get("timestamp", 0))
-                timestamp_int = int(tx.get("timestamp", "0"), 16) if isinstance(
-                    tx.get("timestamp"), str) else int(tx.get("timestamp", 0))
             except Exception:
                 timestamp_int = 0
             try:
-                blocknumber_int = int(tx.get("blockNumber", "0"), 16) if isinstance(
-                    tx.get("blockNumber"), str) else int(tx.get("blockNumber", 0))
                 blocknumber_int = int(tx.get("blockNumber", "0"), 16) if isinstance(
                     tx.get("blockNumber"), str) else int(tx.get("blockNumber", 0))
             except Exception:
@@ -291,8 +236,6 @@ async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse
 
             rows.append((tx_hash, timestamp_int, blocknumber_int,
                         from_val, to_val, value, block_index))
-            rows.append((tx_hash, timestamp_int, blocknumber_int,
-                        from_val, to_val, value, block_index))
 
         # Insert batch and mark block processed
         insert_transactions_batch(conn, rows)
@@ -300,7 +243,6 @@ async def query_n_blocks(ApiClient: ApiClient, n: int, start_block: int, reverse
         processed_count += 1
 
     conn.close()
-    return { "processed_blocks": processed_count, "skipped_blocks": skipped_count }
     return {"processed_blocks": processed_count, "skipped_blocks": skipped_count}
 
 
@@ -312,9 +254,6 @@ def find_transaction_chain(db_path: str, length: int = 5):
     for i in range(10000):
         start_wallet = random.choice(wallets)[0]
         # print(start_wallet)
-        in_transactions = conn.execute("SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
-        out_transactions = conn.execute("SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ?", (start_wallet,)).fetchall()
-        if(len(in_transactions) > 0 and len(out_transactions) > 0):
         in_transactions = conn.execute(
             "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ?", (start_wallet,)).fetchall()
         out_transactions = conn.execute(
@@ -325,7 +264,6 @@ def find_transaction_chain(db_path: str, length: int = 5):
                 from_hash, in_value, in_timestamp = tx
                 for out_tx in out_transactions:
                     to_hash, out_value, out_timestamp = out_tx
-                    if(int(in_timestamp) < int(out_timestamp)):
                     if (int(in_timestamp) < int(out_timestamp)):
                         if abs(int(in_value, 16) - int(out_value, 16)) < max(int(in_value, 16) // (10 ** 5), 100):
                             interactions += 1
@@ -345,7 +283,6 @@ def find_transaction_chain(db_path: str, length: int = 5):
             found = False
             prev_tx = conn.execute(
                 "SELECT from_hash, value, timestamp FROM transactions WHERE to_hash = ? AND timestamp < ? ",
-                (current_wallet,current_timestamp,)
                 (current_wallet, current_timestamp,)
             ).fetchall()
             for tx in prev_tx:
@@ -366,7 +303,6 @@ def find_transaction_chain(db_path: str, length: int = 5):
             found = False
             next_tx = conn.execute(
                 "SELECT to_hash, value, timestamp FROM transactions WHERE from_hash = ? AND timestamp > ? ",
-                (current_wallet,current_timestamp,)
                 (current_wallet, current_timestamp,)
             ).fetchall()
             for tx in next_tx:
@@ -394,26 +330,6 @@ def find_transaction_chain(db_path: str, length: int = 5):
     # Note THERE ARE STILL DUPLICATES.
     print(f"Total chains longer than length {length}: {len(final_chains)}")
     return final_chains
-
-<<<<<<< Updated upstream
-def create_alert_dbs(conn: sqlite3.Connection):
-    cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE transaction_alerts (" \
-        "   alert_id INTEGER," \
-        "   transaction_hash TEXT NOT NULL," \
-        "   PRIMARY KEY (alert_id, transaction_hash)" \
-        ");",())
-    cur.execute(
-        "CREATE TABLE account_alerts (" \
-        "   alert_id INTEGER," \
-        "   account_hash TEXT NOT NULL," \
-        "   PRIMARY KEY (alert_id, account_hash)" \
-        "   FOREIGN KEY (alert_id) REFERENCES transaction_alerts(alert_id)" \
-        ");",())
-    conn.commit()
-=======
->>>>>>> Stashed changes
 
 def main():
     chains = find_transaction_chain("./blockchain.db", length=4)

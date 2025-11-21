@@ -491,48 +491,127 @@ def get_chain_priority(chain_len: int) -> str:
     else:
         return 'low'
 
-def get_wallet_priority(tx_val) -> str:
-    val_in_eth = wei_to_eth(value_to_int(tx_val))
-
-    if val_in_eth >= 0.1:
+def get_account_priority(tx_count: int) -> str:
+    """Algorithm 2: Priority based on number of transactions for an account."""
+    if tx_count >= 50:
         return 'high'
-    elif val_in_eth >= 0.01:
+    elif tx_count >= 20:
+        return 'med'
+    else:
+        return 'low'
+
+def get_timeframe_priority(tx_count: int) -> str:
+    """Algorithm 3: Priority based on transactions within time frame."""
+    if tx_count >= 30:
+        return 'high'
+    elif tx_count >= 10:
         return 'med'
     else:
         return 'low'
     
 def get_full_alert_data():
+    """Get all alerts from alert tables, sorted by priority. Uses real data from chain_alerts and wallet_alerts tables."""
     with get_connection() as conn:
         cur = conn.cursor()
 
-        all_alerts = pd.DataFrame(columns=['alert_id', 'type', 'priority', 'timestamp'])
+        all_alerts = pd.DataFrame(columns=['alert_id', 'algorithm', 'priority', 'timestamp', 'details'])
         
-        cur.execute("""
-            SELECT chain_alerts.alert_id, chain_length, time
-            FROM chain_alerts JOIN 
-                (SELECT alert_id, MAX(timestamp) AS time
-                FROM chain_alert_transactions AS chain_txs JOIN transactions AS txs
-                    ON chain_txs.transaction_hash = txs.hash
-                GROUP BY alert_id) AS alert_times
-            ON chain_alerts.alert_id = alert_times.alert_id
-        """)
-        chain_alerts = cur.fetchall()
+        # Algorithm 1: Chain-based alerts (priority based on chain length)
+        try:
+            cur.execute("""
+                SELECT chain_alerts.alert_id, chain_length, time
+                FROM chain_alerts JOIN 
+                    (SELECT alert_id, MAX(timestamp) AS time
+                    FROM chain_alert_transactions AS chain_txs JOIN transactions AS txs
+                        ON chain_txs.transaction_hash = txs.hash
+                    GROUP BY alert_id) AS alert_times
+                ON chain_alerts.alert_id = alert_times.alert_id
+                ORDER BY chain_length DESC
+            """)
+            chain_alerts = cur.fetchall()
 
-        for alert_id, chain_len, time in chain_alerts:
-            all_alerts.loc[len(all_alerts)] = [alert_id, 'chain', get_chain_priority(int(chain_len)), time]
+            for alert_id, chain_len, time in chain_alerts:
+                priority = get_chain_priority(int(chain_len))
+                timestamp = time if time is not None else 0
+                # Count transactions in this chain
+                cur.execute("SELECT COUNT(*) FROM chain_alert_transactions WHERE alert_id = ?", (alert_id,))
+                tx_count = cur.fetchone()[0]
+                all_alerts.loc[len(all_alerts)] = [
+                    alert_id, 
+                    'Chain Detection', 
+                    priority, 
+                    timestamp,
+                    f"Chain length: {chain_len} | Transactions: {tx_count}"
+                ]
+        except Exception as e:
+            logger.warning(f"Error fetching chain alerts: {e}")
 
-        cur.execute("""
-            SELECT alert_id, AVG(value), MAX(timestamp)
-            FROM
-                (SELECT alert_id, value, timestamp
-                FROM wallet_alert_transaction_pairs AS wall_pairs JOIN transactions AS txs 
-                        ON wall_pairs.out_transaction = txs.hash)
-            GROUP BY alert_id
-        """)
-        wallet_alerts = cur.fetchall()
+        # Algorithm 2: Wallet/Account alerts (priority based on transaction count)
+        try:
+            cur.execute("""
+                SELECT 
+                    wa.alert_id,
+                    wa.wallet,
+                    COUNT(DISTINCT watp.in_transaction || watp.out_transaction) as tx_pair_count,
+                    MAX(COALESCE(t1.timestamp, t2.timestamp)) as last_timestamp
+                FROM wallet_alerts wa
+                LEFT JOIN wallet_alert_transaction_pairs watp ON wa.alert_id = watp.alert_id
+                LEFT JOIN transactions t1 ON watp.in_transaction = t1.hash
+                LEFT JOIN transactions t2 ON watp.out_transaction = t2.hash
+                GROUP BY wa.alert_id, wa.wallet
+                ORDER BY tx_pair_count DESC
+            """)
+            wallet_alerts = cur.fetchall()
 
-        for alert_id, value, time in wallet_alerts:
-            all_alerts.loc[len(all_alerts)] = [alert_id, 'wallet', get_wallet_priority(value), time]
+            for alert_id, wallet, tx_count, timestamp in wallet_alerts:
+                priority = get_account_priority(int(tx_count) if tx_count else 0)
+                ts = timestamp if timestamp is not None else 0
+                wallet_str = str(wallet) if wallet else 'Unknown'  # Show full hash, not truncated
+                all_alerts.loc[len(all_alerts)] = [
+                    alert_id,
+                    'Account Activity',
+                    priority,
+                    ts,
+                    f"Account: {wallet_str} | Transaction pairs: {tx_count}"
+                ]
+        except Exception as e:
+            logger.warning(f"Error fetching wallet alerts: {e}")
+
+        # Algorithm 3: Time-based alerts (reads from time_based_alerts table)
+        try:
+            # Read from time_based_alerts table in database
+            cur.execute("""
+                SELECT 
+                    alert_id,
+                    account,
+                    transaction_count,
+                    timestamp
+                FROM time_based_alerts
+                ORDER BY transaction_count DESC, timestamp DESC
+            """)
+            timeframe_alerts = cur.fetchall()
+
+            for alert_id, account, tx_count, timestamp in timeframe_alerts:
+                priority = get_timeframe_priority(int(tx_count) if tx_count else 0)
+                ts = timestamp if timestamp is not None else 0
+                account_str = str(account) if account else 'Unknown'  # Show full hash, not truncated
+                all_alerts.loc[len(all_alerts)] = [
+                    alert_id,
+                    'Time-based Activity',
+                    priority,
+                    ts,
+                    f"Account: {account_str} | Transactions in last hour: {tx_count}"
+                ]
+        except Exception as e:
+            # If table doesn't exist yet, just log warning and continue
+            logger.warning(f"Error fetching time-based alerts (table may not exist yet): {e}")
+
+        # Sort by priority: high -> med -> low, then by timestamp (newest first)
+        if not all_alerts.empty:
+            priority_order = {'high': 0, 'med': 1, 'low': 2}
+            all_alerts['priority_order'] = all_alerts['priority'].map(priority_order)
+            all_alerts = all_alerts.sort_values(['priority_order', 'timestamp'], ascending=[True, False])
+            all_alerts = all_alerts.drop('priority_order', axis=1)
 
         return all_alerts
 
@@ -571,11 +650,140 @@ def get_alert_info(alert_id, type):
                     ORDER BY in_txs.id
             """, conn)
             return {"wallet": wallet, "tx_info": tx_info}
+        
+        elif type == 'timebased' or type == 'time-based':
+            cur.execute(f"SELECT account, transaction_count, timestamp FROM time_based_alerts WHERE alert_id = '{alert_id}'")
+            result = cur.fetchone()
+            if result:
+                account, tx_count, timestamp = result
+                # Get transactions for this account in the timeframe (last hour from timestamp)
+                tx_info = pd.read_sql_query(f"""
+                    SELECT hash, from_hash, to_hash, value, timestamp
+                    FROM transactions
+                    WHERE (from_hash = ? OR to_hash = ?)
+                    AND timestamp > ? - 3600
+                    AND timestamp <= ?
+                    ORDER BY timestamp DESC
+                """, conn, params=(account, account, timestamp, timestamp))
+                return {"account": account, "transaction_count": tx_count, "timestamp": timestamp, "tx_info": tx_info}
+            return {"account": None, "transaction_count": 0, "timestamp": 0, "tx_info": pd.DataFrame()}
 
 def get_total_alert_count() -> int:
     """Get total alert count."""
     summary = get_alert_summary()
     return summary.get("total", 0)
+
+def get_accounts_with_alert_priority():
+    """Get accounts with their alert counts, sorted by alert count (no priority)."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        
+        # Get accounts from chain alerts
+        cur.execute("""
+            SELECT DISTINCT caw.wallet as account, COUNT(DISTINCT ca.alert_id) as alert_count
+            FROM chain_alert_wallets caw
+            JOIN chain_alerts ca ON caw.alert_id = ca.alert_id
+            GROUP BY caw.wallet
+        """)
+        chain_accounts = cur.fetchall()
+        
+        # Get accounts from wallet alerts
+        cur.execute("""
+            SELECT wallet as account, COUNT(DISTINCT alert_id) as alert_count
+            FROM wallet_alerts
+            GROUP BY wallet
+        """)
+        wallet_accounts = cur.fetchall()
+        
+        # Combine and aggregate
+        account_dict = {}
+        for account, count in chain_accounts:
+            account_str = str(account)
+            account_dict[account_str] = account_dict.get(account_str, 0) + count
+        
+        for account, count in wallet_accounts:
+            account_str = str(account)
+            account_dict[account_str] = account_dict.get(account_str, 0) + count
+        
+        # Create DataFrame without priorities
+        accounts_list = []
+        for account, alert_count in account_dict.items():
+            accounts_list.append({
+                'account': account,
+                'alert_count': alert_count
+            })
+        
+        if accounts_list:
+            df = pd.DataFrame(accounts_list)
+            # Sort by alert count descending
+            df = df.sort_values('alert_count', ascending=False)
+            return df
+        return pd.DataFrame(columns=['account', 'alert_count'])
+
+def get_account_details(account_hash: str):
+    """Get full details for a specific account."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        details = {
+            'account': account_hash,
+            'chain_alerts': [],
+            'wallet_alerts': [],
+            'transactions': []
+        }
+        
+        # Get chain alerts for this account
+        cur.execute("""
+            SELECT DISTINCT ca.alert_id, ca.chain_length
+            FROM chain_alert_wallets caw
+            JOIN chain_alerts ca ON caw.alert_id = ca.alert_id
+            WHERE caw.wallet = ?
+        """, (account_hash,))
+        chain_alerts = cur.fetchall()
+        for alert_id, chain_len in chain_alerts:
+            details['chain_alerts'].append({
+                'alert_id': alert_id,
+                'chain_length': chain_len,
+                'priority': get_chain_priority(int(chain_len))
+            })
+        
+        # Get wallet alerts for this account
+        cur.execute("""
+            SELECT alert_id FROM wallet_alerts WHERE wallet = ?
+        """, (account_hash,))
+        wallet_alerts = cur.fetchall()
+        for (alert_id,) in wallet_alerts:
+            cur.execute("""
+                SELECT COUNT(*) FROM wallet_alert_transaction_pairs WHERE alert_id = ?
+            """, (alert_id,))
+            tx_count = cur.fetchone()[0]
+            details['wallet_alerts'].append({
+                'alert_id': alert_id,
+                'transaction_pairs': tx_count,
+                'priority': get_account_priority(int(tx_count))
+            })
+        
+        # Get transaction statistics
+        cur.execute("""
+            SELECT 
+                COUNT(DISTINCT hash) as tx_count,
+                COUNT(DISTINCT CASE WHEN from_hash = ? THEN hash END) as sent_count,
+                COUNT(DISTINCT CASE WHEN to_hash = ? THEN hash END) as received_count,
+                SUM(CASE WHEN from_hash = ? THEN CAST(value AS INTEGER) ELSE 0 END) as total_sent,
+                SUM(CASE WHEN to_hash = ? THEN CAST(value AS INTEGER) ELSE 0 END) as total_received
+            FROM transactions
+            WHERE from_hash = ? OR to_hash = ?
+        """, (account_hash, account_hash, account_hash, account_hash, account_hash, account_hash))
+        tx_stats = cur.fetchone()
+        
+        details['transaction_stats'] = {
+            'total_transactions': tx_stats[0] if tx_stats else 0,
+            'sent_count': tx_stats[1] if tx_stats else 0,
+            'received_count': tx_stats[2] if tx_stats else 0,
+            'total_sent': tx_stats[3] if tx_stats else 0,
+            'total_received': tx_stats[4] if tx_stats else 0
+        }
+        
+        return details
 
 
 def get_suspicious_patterns() -> Dict[str, List]:
