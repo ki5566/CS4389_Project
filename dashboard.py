@@ -87,13 +87,22 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data(show_spinner="Loading blockchain data...", ttl=30)
+@st.cache_data(show_spinner="Loading transactions...")
 def load_transactions() -> pd.DataFrame:
     """Load transactions with caching."""
     return query.get_transactions()
 
+@st.cache_data(show_spinner="Loading alert data...")
+def load_full_alerts() -> pd.DataFrame:
+    """Load alerts with caching."""
+    return query.get_full_alert_data()
 
-@st.cache_data(show_spinner=False, ttl=30)
+@st.cache_data(show_spinner="Loading account data...")
+def load_accounts() -> pd.DataFrame:
+    """Load accounts with caching."""
+    return query.get_accounts_with_alert_priority()
+
+@st.cache_data(show_spinner=False)
 def load_summary() -> Dict:
     """Load aggregated summary metrics."""
     summary = {
@@ -115,19 +124,19 @@ def load_summary() -> Dict:
     return summary
 
 
-@st.cache_data(show_spinner=False, ttl=30)
+@st.cache_data(show_spinner=False)
 def load_hourly_stats(date: Optional[datetime] = None) -> pd.DataFrame:
     """Load hourly transaction statistics."""
     return query.get_hourly_statistics(date)
 
 
-@st.cache_data(show_spinner=False, ttl=60)
+@st.cache_data(show_spinner=False)
 def load_top_addresses(n: int = 10, by: str = "value") -> pd.DataFrame:
     """Load top addresses by volume or count."""
     return query.get_top_addresses(n=n, by=by, address_type="both")
 
 
-@st.cache_data(show_spinner=False, ttl=120)
+@st.cache_data(show_spinner=False)
 def load_suspicious_patterns() -> Dict:
     """Load suspicious transaction patterns."""
     return query.get_suspicious_patterns()
@@ -369,176 +378,173 @@ def filter_dataframe(df: pd.DataFrame, filters: Dict) -> pd.DataFrame:
 
     return filtered
 
-
 def show_alert_details(alert_row):
-    """Show alert details in a sidebar."""
-    with st.sidebar:
-        st.header("Alert Details")
-        st.markdown("---")
-        
-        st.subheader("Basic Information")
-        st.write(f"**Alert ID:** {alert_row['alert_id']}")
-        st.write(f"**Algorithm:** {alert_row['algorithm']}")
-        st.write(f"**Priority:** {alert_row['priority'].upper()}")
-        
-        if alert_row['timestamp']:
-            try:
-                timestamp = pd.to_datetime(alert_row['timestamp'], unit='s', errors='coerce')
-                st.write(f"**Timestamp:** {timestamp}")
-            except:
-                st.write(f"**Timestamp:** {alert_row['timestamp']}")
-        
-        st.write(f"**Details:** {alert_row['details']}")
-        
-        # Get additional details based on algorithm type
-        if alert_row['algorithm'] == 'Chain Detection':
-            try:
-                alert_info = query.get_alert_info(alert_row['alert_id'], 'chain')
-                st.markdown("---")
-                st.subheader("Chain Information")
-                st.write(f"**Chain Length:** {alert_info.get('chain_len', 'N/A')}")
-                if not alert_info.get('tx_info', pd.DataFrame()).empty:
-                    st.write("**Transactions in Chain:**")
-                    tx_df = alert_info['tx_info']
-                    
-                    # Configure column display to show full hashes
-                    column_config = {}
-                    # Find hash columns and configure them to show full values without truncation
-                    for col in tx_df.columns:
-                        col_lower = col.lower()
-                        if 'hash' in col_lower or col_lower == 'hash' or 'from' in col_lower or 'to' in col_lower:
-                            # Use TextColumn with no width limit to show full hash
-                            column_config[col] = st.column_config.TextColumn(
-                                col.replace('_', ' ').title(),
-                                width=None  # No width limit - will use full available space
-                            )
-                    
-                    st.dataframe(
-                        tx_df, 
-                        hide_index=True, 
-                        use_container_width=True,
-                        column_config=column_config if column_config else None
-                    )
-            except Exception as e:
-                st.warning(f"Could not load chain details: {e}")
-        
-        elif alert_row['algorithm'] == 'Account Activity':
-            try:
-                alert_info = query.get_alert_info(alert_row['alert_id'], 'wallet')
-                st.markdown("---")
-                st.subheader("Account Information")
-                wallet_hash = alert_info.get('wallet', 'N/A')
-                # Display full wallet hash - use code block to show full hash without truncation
-                st.write("**Account Hash:**")
-                st.code(wallet_hash, language=None)
-                if not alert_info.get('tx_info', pd.DataFrame()).empty:
-                    st.write("**Transaction Pairs:**")
-                    tx_df = alert_info['tx_info']
-                    
-                    # Configure column display to show full hashes
-                    column_config = {}
-                    for col in tx_df.columns:
-                        col_lower = col.lower()
-                        if 'hash' in col_lower:
-                            # Use TextColumn with no width limit to show full hash
-                            column_config[col] = st.column_config.TextColumn(
-                                col.replace('_', ' ').title(),
-                                width=None  # No width limit - will use full available space
-                            )
-                    
-                    st.dataframe(
-                        tx_df, 
-                        hide_index=True, 
-                        use_container_width=True,
-                        column_config=column_config if column_config else None
-                    )
-            except Exception as e:
-                st.warning(f"Could not load account details: {e}")
-        
-        elif alert_row['algorithm'] == 'Time-based Activity':
-            try:
-                alert_info = query.get_alert_info(alert_row['alert_id'], 'timebased')
-                st.markdown("---")
-                st.subheader("Account Information")
-                account_hash = alert_info.get('account', 'N/A')
-                # Display full account hash - use code block to show full hash without truncation
-                st.write("**Account Hash:**")
-                st.code(account_hash, language=None)
-                st.write(f"**Transaction Count:** {alert_info.get('transaction_count', 0)}")
-                if alert_info.get('timestamp'):
-                    try:
-                        timestamp = pd.to_datetime(alert_info['timestamp'], unit='s', errors='coerce')
-                        st.write(f"**Last Transaction Time:** {timestamp}")
-                    except:
-                        st.write(f"**Last Transaction Time:** {alert_info['timestamp']}")
-                
-                if not alert_info.get('tx_info', pd.DataFrame()).empty:
-                    st.write("**Recent Transactions (last hour):**")
-                    tx_df = alert_info['tx_info']
-                    
-                    # Configure column display to show full hashes
-                    column_config = {}
-                    for col in tx_df.columns:
-                        col_lower = col.lower()
-                        if 'hash' in col_lower:
-                            # Use TextColumn with no width limit to show full hash
-                            column_config[col] = st.column_config.TextColumn(
-                                col.replace('_', ' ').title(),
-                                width=None  # No width limit - will use full available space
-                            )
-                    
-                    st.dataframe(
-                        tx_df, 
-                        hide_index=True, 
-                        use_container_width=True,
-                        column_config=column_config if column_config else None
-                    )
-            except Exception as e:
-                st.warning(f"Could not load time-based alert details: {e}")
-
-def show_account_details(account_row):
-    """Show account details in a sidebar."""
-    with st.sidebar:
-        st.header("Account Details")
-        st.markdown("---")
-        
-        account_hash = account_row['account']
-        st.subheader("Basic Information")
-        st.write(f"**Account Hash:** {account_hash}")
-        st.write(f"**Total Alert Count:** {account_row['alert_count']}")
-        
-        # Get full account details
+    st.header("Alert Details")
+    st.markdown("---")
+    
+    st.subheader("Basic Information")
+    st.write(f"**Alert ID:** {alert_row['alert_id']}")
+    st.write(f"**Algorithm:** {alert_row['algorithm']}")
+    st.write(f"**Priority:** {alert_row['priority'].upper()}")
+    
+    if alert_row['timestamp']:
         try:
-            account_details = query.get_account_details(account_hash)
-            
+            timestamp = pd.to_datetime(alert_row['timestamp'], unit='s', errors='coerce')
+            st.write(f"**Timestamp:** {timestamp}")
+        except:
+            st.write(f"**Timestamp:** {alert_row['timestamp']}")
+    
+    st.write(f"**Details:** {alert_row['details']}")
+    
+    # Get additional details based on algorithm type
+    if alert_row['algorithm'] == 'Chain Detection':
+        try:
+            alert_info = query.get_alert_info(alert_row['alert_id'], 'chain')
             st.markdown("---")
-            st.subheader("Transaction Statistics")
-            stats = account_details.get('transaction_stats', {})
-            st.write(f"**Total Transactions:** {stats.get('total_transactions', 0)}")
-            st.write(f"**Sent:** {stats.get('sent_count', 0)}")
-            st.write(f"**Received:** {stats.get('received_count', 0)}")
-            st.write(f"**Total Sent:** {query.format_value_display(stats.get('total_sent', 0))}")
-            st.write(f"**Total Received:** {query.format_value_display(stats.get('total_received', 0))}")
-            
+            st.subheader("Chain Information")
+            st.write(f"**Chain Length:** {alert_info.get('chain_len', 'N/A')}")
+            if not alert_info.get('tx_info', pd.DataFrame()).empty:
+                st.write("**Transactions in Chain:**")
+                tx_df = alert_info['tx_info']
+                
+                # Configure column display to show full hashes
+                column_config = {}
+                # Find hash columns and configure them to show full values without truncation
+                for col in tx_df.columns:
+                    col_lower = col.lower()
+                    if 'hash' in col_lower or col_lower == 'hash' or 'from' in col_lower or 'to' in col_lower:
+                        # Use TextColumn with no width limit to show full hash
+                        column_config[col] = st.column_config.TextColumn(
+                            col.replace('_', ' ').title(),
+                            width=None  # No width limit - will use full available space
+                        )
+
+                st.dataframe(
+                    tx_df, 
+                    hide_index=True, 
+                    use_container_width=True,
+                    column_config=column_config if column_config else None
+                )
+        except Exception as e:
+            st.warning(f"Could not load chain details: {e}")
+    
+    elif alert_row['algorithm'] == 'Account Activity':
+        try:
+            alert_info = query.get_alert_info(alert_row['alert_id'], 'wallet')
             st.markdown("---")
-            st.subheader("Chain Alerts")
-            chain_alerts = account_details.get('chain_alerts', [])
-            if chain_alerts:
-                for alert in chain_alerts:
-                    st.write(f"- Alert ID: {alert['alert_id']} | Chain Length: {alert['chain_length']} | Priority: {alert['priority'].upper()}")
-            else:
-                st.write("No chain alerts")
-            
-            st.markdown("---")
-            st.subheader("Wallet Alerts")
-            wallet_alerts = account_details.get('wallet_alerts', [])
-            if wallet_alerts:
-                for alert in wallet_alerts:
-                    st.write(f"- Alert ID: {alert['alert_id']} | Transaction Pairs: {alert['transaction_pairs']} | Priority: {alert['priority'].upper()}")
-            else:
-                st.write("No wallet alerts")
+            st.subheader("Account Information")
+            wallet_hash = alert_info.get('wallet', 'N/A')
+            # Display full wallet hash - use code block to show full hash without truncation
+            st.write("**Account Hash:**")
+            st.code(wallet_hash, language=None)
+            if not alert_info.get('tx_info', pd.DataFrame()).empty:
+                st.write("**Transaction Pairs:**")
+                tx_df = alert_info['tx_info']
+                
+                # Configure column display to show full hashes
+                column_config = {}
+                for col in tx_df.columns:
+                    col_lower = col.lower()
+                    if 'hash' in col_lower:
+                        # Use TextColumn with no width limit to show full hash
+                        column_config[col] = st.column_config.TextColumn(
+                            col.replace('_', ' ').title(),
+                            width=None  # No width limit - will use full available space
+                        )
+                
+                st.dataframe(
+                    tx_df, 
+                    hide_index=True, 
+                    use_container_width=True,
+                    column_config=column_config if column_config else None
+                )
         except Exception as e:
             st.warning(f"Could not load account details: {e}")
+    
+    elif alert_row['algorithm'] == 'Time-based Activity':
+        try:
+            alert_info = query.get_alert_info(alert_row['alert_id'], 'timebased')
+            st.markdown("---")
+            st.subheader("Account Information")
+            account_hash = alert_info.get('account', 'N/A')
+            # Display full account hash - use code block to show full hash without truncation
+            st.write("**Account Hash:**")
+            st.code(account_hash, language=None)
+            st.write(f"**Transaction Count:** {alert_info.get('transaction_count', 0)}")
+            if alert_info.get('timestamp'):
+                try:
+                    timestamp = pd.to_datetime(alert_info['timestamp'], unit='s', errors='coerce')
+                    st.write(f"**Last Transaction Time:** {timestamp}")
+                except:
+                    st.write(f"**Last Transaction Time:** {alert_info['timestamp']}")
+            
+            if not alert_info.get('tx_info', pd.DataFrame()).empty:
+                st.write("**Recent Transactions (last hour):**")
+                tx_df = alert_info['tx_info']
+                
+                # Configure column display to show full hashes
+                column_config = {}
+                for col in tx_df.columns:
+                    col_lower = col.lower()
+                    if 'hash' in col_lower:
+                        # Use TextColumn with no width limit to show full hash
+                        column_config[col] = st.column_config.TextColumn(
+                            col.replace('_', ' ').title(),
+                            width=None  # No width limit - will use full available space
+                        )
+                
+                st.dataframe(
+                    tx_df, 
+                    hide_index=True, 
+                    use_container_width=True,
+                    column_config=column_config if column_config else None
+                )
+        except Exception as e:
+            st.warning(f"Could not load time-based alert details: {e}")
+
+def show_account_details(account_row):
+    """Show account details."""
+
+    st.header("Account Details")
+    st.markdown("---")
+    
+    account_hash = account_row['account']
+    st.subheader("Basic Information")
+    st.write(f"**Account Hash:** {account_hash}")
+    st.write(f"**Total Alert Count:** {account_row['alert_count']}")
+    
+    # Get full account details
+    try:
+        account_details = query.get_account_details(account_hash)
+        
+        st.markdown("---")
+        st.subheader("Transaction Statistics")
+        stats = account_details.get('transaction_stats', {})
+        st.write(f"**Total Transactions:** {stats.get('total_transactions', 0)}")
+        st.write(f"**Sent:** {stats.get('sent_count', 0)}")
+        st.write(f"**Received:** {stats.get('received_count', 0)}")
+        st.write(f"**Total Sent:** {query.format_value_display(stats.get('total_sent', 0))}")
+        st.write(f"**Total Received:** {query.format_value_display(stats.get('total_received', 0))}")
+        
+        st.markdown("---")
+        st.subheader("Chain Alerts")
+        chain_alerts = account_details.get('chain_alerts', [])
+        if chain_alerts:
+            for alert in chain_alerts:
+                st.write(f"- Alert ID: {alert['alert_id']} | Chain Length: {alert['chain_length']} | Priority: {alert['priority'].upper()}")
+        else:
+            st.write("No chain alerts")
+        
+        st.markdown("---")
+        st.subheader("Wallet Alerts")
+        wallet_alerts = account_details.get('wallet_alerts', [])
+        if wallet_alerts:
+            for alert in wallet_alerts:
+                st.write(f"- Alert ID: {alert['alert_id']} | Transaction Pairs: {alert['transaction_pairs']} | Priority: {alert['priority'].upper()}")
+        else:
+            st.write("No wallet alerts")
+    except Exception as e:
+        st.warning(f"Could not load account details: {e}")
 
 def display_suspicious_patterns(patterns: Dict):
     """Display detected suspicious patterns."""
@@ -590,12 +596,11 @@ def main():
     # Load data - cache to prevent unnecessary reruns
     with st.spinner("Loading blockchain data..."):
         tx_df = load_transactions()
+        full_alerts = load_full_alerts()
+        accounts = load_accounts()
         summary = load_summary()
         patterns = load_suspicious_patterns()
     
-    # Store that we've loaded data to prevent tab reset
-    if 'data_loaded' not in st.session_state:
-        st.session_state.data_loaded = True
 
     # Check for data
     if tx_df.empty:
@@ -645,19 +650,19 @@ def main():
 
     # Address filter
     address_filter = st.sidebar.text_input(
-        "🔎 Address Contains",
+        "Address Contains",
         placeholder="Enter partial address..."
     )
 
     # Transaction type
     tx_type = st.sidebar.selectbox(
-        "📂 Transaction Type",
+        "Transaction Type",
         ["All", "With Value", "Zero Value"]
     )
 
     # Hour range
     hour_range = st.sidebar.slider(
-        "⏱ Hour of Day",
+        "Hour of Day",
         min_value=0,
         max_value=23,
         value=(0, 23)
@@ -690,26 +695,11 @@ def main():
 
     st.markdown("---")
 
-    # Tabs - preserve active tab in session state to prevent reset on filter changes
-    tab_names = ["Overview", "Analysis", "Patterns", "Alerts", "Accounts", "Transactions"]
-    
-    # Initialize active tab in session state (default to Alerts tab)
-    if 'main_tab_selector' not in st.session_state:
-        st.session_state.main_tab_selector = "Alerts"
-    
-    # Use radio buttons for tab navigation that preserves state
-    # The key ensures the selected tab persists across reruns
-    selected_tab = st.radio(
-        "Navigation",
-        options=tab_names,
-        index=tab_names.index(st.session_state.main_tab_selector) if st.session_state.main_tab_selector in tab_names else 3,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="main_tab_selector"
-    )
+     # Tabs
+    tabs = st.tabs(["Overview", "Analysis", "Patterns", "Alerts", "Accounts", "Transactions"])
     
     # Overview Tab
-    if selected_tab == "Overview":
+    with tabs[0]:
         st.subheader("Transaction Activity Overview")
 
         if filtered_df.empty:
@@ -759,7 +749,7 @@ def main():
                             st.plotly_chart(fig, use_container_width=True)
 
     # Analysis Tab
-    elif selected_tab == "Analysis":
+    with tabs[1]:
         st.subheader("Value Distribution & Top Addresses")
 
         if filtered_df.empty:
@@ -793,7 +783,7 @@ def main():
                     )
 
     # Patterns Tab
-    elif selected_tab == "Patterns":
+    with tabs[2]:
         display_suspicious_patterns(patterns)
 
         # Heatmap
@@ -803,14 +793,14 @@ def main():
             st.plotly_chart(fig_heat, use_container_width=True)
 
     # Alerts Tab
-    elif selected_tab == "Alerts":
+    with tabs[3]:
         st.subheader("Alert Summary")
         
         # Get all alerts from alert tables - REAL DATA from database tables
         # Algorithm 1: Pulls from chain_alerts table (chain detection results)
         # Algorithm 2: Pulls from wallet_alerts table (account activity alerts)
         # Algorithm 3: Pulls from time_based_alerts table (time-based activity alerts)
-        all_alerts = query.get_full_alert_data()
+        all_alerts = full_alerts.copy()
         
         # Alert metrics
         cols = st.columns(4)
@@ -928,7 +918,7 @@ def main():
                     column_config=column_config
                 )
                 
-                # Show details sidebar if row is selected
+                # Show details if row is selected
                 if hasattr(selected_df, 'selection') and hasattr(selected_df.selection, 'rows') and selected_df.selection.rows:
                     selected_idx = selected_df.selection.rows[0]
                     if selected_idx < len(filtered_alerts):
@@ -951,11 +941,11 @@ def main():
             st.info("No alerts found in the database.")
 
     # Accounts Tab
-    elif selected_tab == "Accounts":
+    with tabs[4]:
         st.subheader("Accounts with Alerts")
         
         # Get accounts with alert counts (no priority)
-        accounts_df = query.get_accounts_with_alert_priority()
+        accounts_df = accounts.copy()
         
         if not accounts_df.empty:
             # Add sorting options
@@ -1013,7 +1003,7 @@ def main():
             st.info("No accounts with alerts found.")
 
     # Transactions Tab
-    elif selected_tab == "Transactions":
+    with tabs[5]:
         st.subheader("Transaction Details")
 
         if filtered_df.empty:
