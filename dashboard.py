@@ -947,6 +947,9 @@ def main():
         # Get accounts with alert counts (no priority)
         accounts_df = accounts.copy()
         
+        # Calculate unique alerts count (from all alert types)
+        unique_alerts_count = len(full_alerts) if not full_alerts.empty else 0
+        
         if not accounts_df.empty:
             # Add sorting options
             col1, col2 = st.columns([3, 1])
@@ -998,7 +1001,7 @@ def main():
             with cols[0]:
                 st.metric("Total Accounts", len(accounts_df))
             with cols[1]:
-                st.metric("Total Alerts", accounts_df['alert_count'].sum())
+                st.metric("Total Alerts", unique_alerts_count)
         else:
             st.info("No accounts with alerts found.")
 
