@@ -996,10 +996,10 @@ def main():
                     show_account_details(selected_account)
             
             # Summary
-            st.markdown("### Account Summary")
+            st.markdown("### Alerts Summary")
             cols = st.columns(2)
             with cols[0]:
-                st.metric("Total Accounts", len(accounts_df))
+                st.metric("Accounts with Alerts", len(accounts_df))
             with cols[1]:
                 st.metric("Total Alerts", unique_alerts_count)
         else:
