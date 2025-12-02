@@ -623,32 +623,58 @@ def get_alert_info(alert_id, type):
             cur.execute(f"SELECT chain_length FROM chain_alerts WHERE alert_id = '{alert_id}'")
             chain_len = cur.fetchone()[0]
             tx_info = pd.read_sql_query(f"""
-                            SELECT * 
+                            SELECT transaction_hash, from_hash, to_hash, value, timestamp 
                             FROM chain_alert_transactions AS chain_txs JOIN transactions AS txs
                                 ON chain_txs.transaction_hash = txs.hash
                             WHERE chain_txs.alert_id = '{alert_id}'
                         """, conn)
             
-            return {"chain_len": chain_len, "tx_info": tx_info}
+            # Convert values
+            tx_info["ValueWei"] = tx_info["value"].apply(value_to_int)
+            tx_info["Timestamp"] = pd.to_datetime(tx_info["timestamp"], unit="s", errors="coerce")
+
+            # Rename columns
+            tx_info = tx_info.rename(columns={
+                "transaction_hash": "Transaction Hash",
+                "from_hash": "From",
+                "to_hash": "To",
+            })
+
+            return {"chain_len": chain_len, "tx_info": tx_info[["Transaction Hash", "From", "To", "ValueWei", "Timestamp"]]}
         
         elif type == 'wallet':
             cur.execute(f"SELECT wallet FROM wallet_alerts WHERE alert_id = '{alert_id}'")
             wallet = cur.fetchone()[0]
             tx_info = pd.read_sql_query(f"""
-                    SELECT in_hash, out_hash, in_value, out_value    
+                    SELECT in_hash, out_hash, in_value, out_value, in_time, out_time    
                     FROM
-                        (SELECT wallet_pairs.rowid AS id, hash AS in_hash, value AS in_value
+                        (SELECT wallet_pairs.rowid AS id, hash AS in_hash, value AS in_value, timestamp AS in_time
                         FROM wallet_alert_transaction_pairs AS wallet_pairs JOIN transactions AS txs
                             ON wallet_pairs.in_transaction = txs.hash
                         WHERE alert_id = '{alert_id}') AS in_txs
                     JOIN
-                        (SELECT wallet_pairs.rowid AS id, hash AS out_hash, value AS out_value
+                        (SELECT wallet_pairs.rowid AS id, hash AS out_hash, value AS out_value, timestamp AS out_time
                         FROM wallet_alert_transaction_pairs AS wallet_pairs JOIN transactions AS txs
                             ON wallet_pairs.out_transaction = txs.hash
                         WHERE alert_id = '{alert_id}') AS out_txs
                     ON in_txs.id = out_txs.id
                     ORDER BY in_txs.id
             """, conn)
+
+            tx_info["in_value"] = tx_info["in_value"].apply(value_to_int)
+            tx_info["out_value"] = tx_info["out_value"].apply(value_to_int)
+            tx_info["in_time"] = pd.to_datetime(tx_info["in_time"], unit="s", errors="coerce")
+            tx_info["out_time"] = pd.to_datetime(tx_info["out_time"], unit="s", errors="coerce")
+
+            tx_info = tx_info.rename(columns={
+                "in_hash": "In TX Hash",
+                "out_hash": "Out TX Hash",
+                "in_value": "In Value",
+                "out_value": "Out Value",
+                "in_time": "In Time",
+                "out_time": "Out Time"
+            })
+
             return {"wallet": wallet, "tx_info": tx_info}
         
         elif type == 'timebased' or type == 'time-based':
@@ -720,14 +746,24 @@ def get_accounts_with_alert_priority():
             return df
         return pd.DataFrame(columns=['account', 'alert_count'])
 
+def hex_to_int(s):
+    if s is None: 
+        return 0
+    s = s.strip()
+    if s.startswith("0x") or s.startswith("0X"):
+        s = s[2:]
+    if s == "":
+        return 0
+    return int(s, 16)
+
 def get_account_details(account_hash: str):
     """Get full details for a specific account."""
     with get_connection() as conn:
         cur = conn.cursor()
         details = {
             'account': account_hash,
-            'chain_alerts': [],
-            'wallet_alerts': [],
+            'chain_alerts': pd.DataFrame(),
+            'wallet_alerts': pd.DataFrame(),
             'transactions': []
         }
         
@@ -739,14 +775,13 @@ def get_account_details(account_hash: str):
             WHERE caw.wallet = ?
         """, (account_hash,))
         chain_alerts = cur.fetchall()
+        chains_df = pd.DataFrame(columns=['Alert ID', 'Chain Length', 'Priority'])
         for alert_id, chain_len in chain_alerts:
-            details['chain_alerts'].append({
-                'alert_id': alert_id,
-                'chain_length': chain_len,
-                'priority': get_chain_priority(int(chain_len))
-            })
+            chains_df.loc[len(chains_df)] = [alert_id, chain_len, get_chain_priority(int(chain_len)).upper()]
+        details['chain_alerts'] = chains_df
         
         # Get wallet alerts for this account
+        wallets_df = pd.DataFrame(columns=['Alert ID', 'Transaction Pairs', 'Priority'])
         cur.execute("""
             SELECT alert_id FROM wallet_alerts WHERE wallet = ?
         """, (account_hash,))
@@ -756,20 +791,18 @@ def get_account_details(account_hash: str):
                 SELECT COUNT(*) FROM wallet_alert_transaction_pairs WHERE alert_id = ?
             """, (alert_id,))
             tx_count = cur.fetchone()[0]
-            details['wallet_alerts'].append({
-                'alert_id': alert_id,
-                'transaction_pairs': tx_count,
-                'priority': get_account_priority(int(tx_count))
-            })
+            wallets_df.loc[len(wallets_df)] = [alert_id, tx_count, get_account_priority(int(tx_count)).upper()]
+        details['wallet_alerts'] = wallets_df
         
         # Get transaction statistics
+        conn.create_function("HEXTOINT", 1, hex_to_int)
         cur.execute("""
             SELECT 
                 COUNT(DISTINCT hash) as tx_count,
                 COUNT(DISTINCT CASE WHEN from_hash = ? THEN hash END) as sent_count,
                 COUNT(DISTINCT CASE WHEN to_hash = ? THEN hash END) as received_count,
-                SUM(CASE WHEN from_hash = ? THEN CAST(value AS INTEGER) ELSE 0 END) as total_sent,
-                SUM(CASE WHEN to_hash = ? THEN CAST(value AS INTEGER) ELSE 0 END) as total_received
+                SUM(CASE WHEN from_hash = ? THEN HEXTOINT(value) ELSE 0 END) as total_sent,
+                SUM(CASE WHEN to_hash = ? THEN HEXTOINT(value) ELSE 0 END) as total_received
             FROM transactions
             WHERE from_hash = ? OR to_hash = ?
         """, (account_hash, account_hash, account_hash, account_hash, account_hash, account_hash))

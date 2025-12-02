@@ -406,19 +406,17 @@ def show_alert_details(alert_row):
             if not alert_info.get('tx_info', pd.DataFrame()).empty:
                 st.write("**Transactions in Chain:**")
                 tx_df = alert_info['tx_info']
-                
+                tx_df["ValueWei"] = tx_df.apply(
+                    lambda r: query.format_value_display(r["ValueWei"]),
+                    axis=1
+                )
                 # Configure column display to show full hashes
-                column_config = {}
-                # Find hash columns and configure them to show full values without truncation
-                for col in tx_df.columns:
-                    col_lower = col.lower()
-                    if 'hash' in col_lower or col_lower == 'hash' or 'from' in col_lower or 'to' in col_lower:
-                        # Use TextColumn with no width limit to show full hash
-                        column_config[col] = st.column_config.TextColumn(
-                            col.replace('_', ' ').title(),
-                            width=None  # No width limit - will use full available space
-                        )
-
+                column_config={
+                    "Transaction Hash": st.column_config.TextColumn("TX Hash"),
+                    "ValueWei": "Value",
+                    "Timestamp": st.column_config.DatetimeColumn("Time", format="YYYY-MM-DD HH:mm:ss")
+                }
+                
                 st.dataframe(
                     tx_df, 
                     hide_index=True, 
@@ -440,17 +438,20 @@ def show_alert_details(alert_row):
             if not alert_info.get('tx_info', pd.DataFrame()).empty:
                 st.write("**Transaction Pairs:**")
                 tx_df = alert_info['tx_info']
-                
+                tx_df["In Value"] = tx_df.apply(
+                    lambda r: query.format_value_display(r["In Value"]),
+                    axis=1
+                )
+                tx_df["Out Value"] = tx_df.apply(
+                    lambda r: query.format_value_display(r["Out Value"]),
+                    axis=1
+                )
+
                 # Configure column display to show full hashes
-                column_config = {}
-                for col in tx_df.columns:
-                    col_lower = col.lower()
-                    if 'hash' in col_lower:
-                        # Use TextColumn with no width limit to show full hash
-                        column_config[col] = st.column_config.TextColumn(
-                            col.replace('_', ' ').title(),
-                            width=None  # No width limit - will use full available space
-                        )
+                column_config={
+                    "In Time": st.column_config.DatetimeColumn("In Time", format="YYYY-MM-DD HH:mm:ss"),
+                    "Out Time": st.column_config.DatetimeColumn("Out Time", format="YYYY-MM-DD HH:mm:ss")
+                }
                 
                 st.dataframe(
                     tx_df, 
@@ -528,21 +529,19 @@ def show_account_details(account_row):
         
         st.markdown("---")
         st.subheader("Chain Alerts")
-        chain_alerts = account_details.get('chain_alerts', [])
-        if chain_alerts:
-            for alert in chain_alerts:
-                st.write(f"- Alert ID: {alert['alert_id']} | Chain Length: {alert['chain_length']} | Priority: {alert['priority'].upper()}")
+        chain_alerts = account_details.get('chain_alerts', pd.DataFrame())
+        if not chain_alerts.empty:
+            st.dataframe(chain_alerts)
         else:
-            st.write("No chain alerts")
+            st.write("The account has no chain alerts.")
         
         st.markdown("---")
         st.subheader("Wallet Alerts")
-        wallet_alerts = account_details.get('wallet_alerts', [])
-        if wallet_alerts:
-            for alert in wallet_alerts:
-                st.write(f"- Alert ID: {alert['alert_id']} | Transaction Pairs: {alert['transaction_pairs']} | Priority: {alert['priority'].upper()}")
+        wallet_alerts = account_details.get('wallet_alerts', pd.DataFrame())
+        if not wallet_alerts.empty:
+            st.dataframe(wallet_alerts)
         else:
-            st.write("No wallet alerts")
+            st.write("The account has no wallet alerts.")
     except Exception as e:
         st.warning(f"Could not load account details: {e}")
 
@@ -918,13 +917,6 @@ def main():
                     column_config=column_config
                 )
                 
-                # Show details if row is selected
-                if hasattr(selected_df, 'selection') and hasattr(selected_df.selection, 'rows') and selected_df.selection.rows:
-                    selected_idx = selected_df.selection.rows[0]
-                    if selected_idx < len(filtered_alerts):
-                        selected_alert = filtered_alerts.iloc[selected_idx]
-                        show_alert_details(selected_alert)
-                
                 # Priority summary
                 st.markdown("### Priority Breakdown")
                 priority_counts = filtered_alerts['priority'].value_counts()
@@ -935,6 +927,15 @@ def main():
                     st.metric("Medium Priority", priority_counts.get('med', 0))
                 with cols[2]:
                     st.metric("Low Priority", priority_counts.get('low', 0))
+                st.markdown('---')
+
+                # Show details if row is selected
+                if hasattr(selected_df, 'selection') and hasattr(selected_df.selection, 'rows') and selected_df.selection.rows:
+                    selected_idx = selected_df.selection.rows[0]
+                    if selected_idx < len(filtered_alerts):
+                        selected_alert = filtered_alerts.iloc[selected_idx]
+                        show_alert_details(selected_alert)
+                
             else:
                 st.info("No alerts match the selected priority filters.")
         else:
@@ -942,14 +943,22 @@ def main():
 
     # Accounts Tab
     with tabs[4]:
-        st.subheader("Accounts with Alerts")
         
         # Get accounts with alert counts (no priority)
         accounts_df = accounts.copy()
         
         # Calculate unique alerts count (from all alert types)
-        unique_alerts_count = len(full_alerts) if not full_alerts.empty else 0
+        wallet_count = query.get_wallet_count()
         
+        # Summary
+        st.markdown("### Accounts Summary")
+        cols = st.columns(2)
+        with cols[0]:
+            st.metric("Accounts with Alerts", len(accounts_df))
+        with cols[1]:
+            st.metric("Total Accounts", wallet_count)
+        
+        st.subheader("Accounts with Alerts")
         if not accounts_df.empty:
             # Add sorting options
             col1, col2 = st.columns([3, 1])
@@ -970,7 +979,7 @@ def main():
             
             # Format for display
             display_accounts = accounts_df.copy()
-            display_accounts['Account Hash'] = display_accounts['account'].apply(lambda x: x[:16] + '...' if len(str(x)) > 16 else str(x))
+            display_accounts['Account Hash'] = display_accounts['account']
             display_accounts['Alert Count'] = display_accounts['alert_count']
             
             # Display table with clickable rows
@@ -995,13 +1004,6 @@ def main():
                     selected_account = accounts_df.iloc[selected_idx]
                     show_account_details(selected_account)
             
-            # Summary
-            st.markdown("### Alerts Summary")
-            cols = st.columns(2)
-            with cols[0]:
-                st.metric("Accounts with Alerts", len(accounts_df))
-            with cols[1]:
-                st.metric("Total Alerts", unique_alerts_count)
         else:
             st.info("No accounts with alerts found.")
 
@@ -1032,8 +1034,6 @@ def main():
             display_df = display_df.sort_values(sort_by, ascending=ascending).head(rows_to_show)
 
             # Format for display
-            display_df["From_Short"] = display_df["From"].apply(format_address)
-            display_df["To_Short"] = display_df["To"].apply(format_address)
             display_df["Value_Display"] = display_df.apply(
                 lambda r: query.format_value_display(r["ValueWei"]),
                 axis=1
@@ -1043,11 +1043,9 @@ def main():
 
             # Display
             st.dataframe(
-                display_df[["Transaction Hash", "From_Short", "To_Short", "Value_Display", "Block", "Timestamp"]],
+                display_df[["Transaction Hash", "From", "To", "Value_Display", "Block", "Timestamp"]],
                 column_config={
-                    "Transaction Hash": st.column_config.TextColumn("TX Hash", width="small"),
-                    "From_Short": "From",
-                    "To_Short": "To",
+                    "Transaction Hash": st.column_config.TextColumn("TX Hash"),
                     "Value_Display": "Value",
                     "Block": st.column_config.NumberColumn("Block", format="%d"),
                     "Timestamp": st.column_config.DatetimeColumn("Time", format="YYYY-MM-DD HH:mm:ss")
